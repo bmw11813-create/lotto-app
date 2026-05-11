@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="로또분석기" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#047857" />
+  <title>로또 분석기</title>
+  <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+    input, select, textarea { font-size: 16px !important; } /* prevent iOS zoom */
+    body { padding-bottom: env(safe-area-inset-bottom); }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .icon-spin { animation: spin 1s linear infinite; display: inline-block; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="env,react">
+    const { useState, useEffect, useRef } = React;
+
+    // ===== localStorage 기반 저장소 (휴대폰 영구 저장) =====
+    const storage = {
+      get: async (key) => {
+        const v = localStorage.getItem(key);
+        return v !== null ? { key, value: v } : null;
+      },
+      set: async (key, value) => { localStorage.setItem(key, value); return { key, value }; },
+      delete: async (key) => {
+        const had = localStorage.getItem(key) !== null;
+        localStorage.removeItem(key);
+        return { key, deleted: had };
+      },
+      list: async (prefix) => {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!prefix || k.startsWith(prefix)) keys.push(k);
+        }
+        return { keys };
+      }
+    };
+
+    const STRATEGIES = {
+      X: { name: '보너스추적', desc: '9·31·34', emoji: '🎯', color: 'from-orange-500 to-red-500', fixed: [9,31,34], fixedMin: 1, fixedMax: 2 },
+      Y: { name: '미출현폭탄', desc: '12 필수', emoji: '🚀', color: 'from-emerald-600 to-green-700', fixed: [12], fixedMin: 1, fixedMax: 1 },
+      Z: { name: '27번회귀', desc: '9주 휴식', emoji: '🔄', color: 'from-indigo-600 to-blue-700', fixed: [27], fixedMin: 1, fixedMax: 1 },
+      W: { name: '이월수', desc: '1223 본번호', emoji: '🔁', color: 'from-amber-600 to-orange-700', fixed: [16,18,20,32,33,39], fixedMin: 1, fixedMax: 2 },
+      V: { name: '끝수9 강조', desc: '9·19·29·39', emoji: '✨', color: 'from-purple-500 to-pink-600', fixed: [9,19,29,39], fixedMin: 1, fixedMax: 2 },
+      U: { name: '합계정밀', desc: '합 130~150', emoji: '🎲', color: 'from-cyan-500 to-blue-600', fixed: [], fixedMin: 0, fixedMax: 0, sumMin: 130, sumMax: 150 },
+      T: { name: '사주×통계', desc: '사주4+하위2', emoji: '🔮', color: 'from-rose-500 to-red-600', special: 'saju', sajuPool: [1,3,7,8,11,13,14,22,25,28,29,32,38,41] }
+    };
+    const MIXED_WEIGHTS = { X: 2, Y: 2, Z: 1, W: 2, V: 1, U: 1, T: 1 };
+    const BACKTEST_DIST = { X: 5, Y: 5, Z: 4, W: 5, V: 4, U: 4, T: 3 };
+    const POOLS = {
+      미출현: [12], 일회: [7,9,14,21,29,34,37,40,43],
+      강세: [27,15,28,31,38,1,10,17,30,45],
+      중간: [13,16,18,19,20,22,33,36,41],
+      하위: [2,4,5,8,9,10,22,23,25,28,29,30,32,35,41]
+    };
+    const FILL_POOL = [...new Set([...POOLS.미출현, ...POOLS.일회, ...POOLS.강세, ...POOLS.중간])];
+
+    function isValid(nums, sumMin = 110, sumMax = 160) {
+      if (nums.length !== 6) return false;
+      const s = [...nums].sort((a,b) => a-b);
+      const sum = s.reduce((a,b) => a+b, 0);
+      if (sum < sumMin || sum > sumMax) return false;
+      const low = s.filter(n => n <= 15).length;
+      const mid = s.filter(n => n >= 16 && n <= 30).length;
+      const high = s.filter(n => n >= 31).length;
+      if (low === 0 || mid === 0 || high === 0) return false;
+      const odd = s.filter(n => n % 2 === 1).length;
+      if (odd < 2 || odd > 4) return false;
+      let pairs = 0;
+      for (let i = 0; i < 5; i++) if (s[i+1] - s[i] === 1) pairs++;
+      if (pairs > 1) return false;
+      return true;
+    }
+
+    function generateLine(strategy) {
+      const cfg = STRATEGIES[strategy];
+      const sumMin = cfg.sumMin || 110;
+      const sumMax = cfg.sumMax || 160;
+      for (let attempt = 0; attempt < 300; attempt++) {
+        const nums = new Set();
+        if (cfg.special === 'saju') {
+          const sajuShuf = [...cfg.sajuPool].sort(() => Math.random() - 0.5);
+          for (let i = 0; i < 4 && i < sajuShuf.length; i++) nums.add(sajuShuf[i]);
+          const lowPool = [...POOLS.하위, ...POOLS.미출현, ...POOLS.일회].filter(n => !nums.has(n));
+          const lowShuf = lowPool.sort(() => Math.random() - 0.5);
+          for (let i = 0; i < 2 && i < lowShuf.length; i++) nums.add(lowShuf[i]);
+        } else {
+          const fixedCount = Math.floor(Math.random() * (cfg.fixedMax - cfg.fixedMin + 1)) + cfg.fixedMin;
+          const shuf = [...cfg.fixed].sort(() => Math.random() - 0.5);
+          for (let i = 0; i < fixedCount && i < shuf.length; i++) nums.add(shuf[i]);
+          const fillShuf = FILL_POOL.filter(n => !nums.has(n)).sort(() => Math.random() - 0.5);
+          for (const n of fillShuf) { if (nums.size >= 6) break; nums.add(n); }
+        }
+        if (nums.size < 6) {
+          const all = Array.from({length: 45}, (_, i) => i + 1).filter(n => !nums.has(n));
+          const allShuf = all.sort(() => Math.random() - 0.5);
+          for (const n of allShuf) { if (nums.size >= 6) break; nums.add(n); }
+        }
+        const arr = [...nums].sort((a,b) => a-b);
+        if (isValid(arr, sumMin, sumMax)) return arr;
+      }
+      return null;
+    }
+
+    function generateBatch(strategy, count) {
+      if (strategy === 'MIX') {
+        const result = [];
+        for (const [s, w] of Object.entries(MIXED_WEIGHTS)) {
+          for (let i = 0; i < w; i++) {
+            const n = generateLine(s);
+            if (n) result.push({ strategy: s, numbers: n });
+          }
+        }
+        return result.slice(0, count);
+      }
+      const result = [];
+      let attempts = 0;
+      while (result.length < count && attempts < count * 5) {
+        const n = generateLine(strategy);
+        if (n) {
+          const exists = result.some(r => r.numbers.join(',') === n.join(','));
+          if (!exists) result.push({ strategy, numbers: n });
+        }
+        attempts++;
+      }
+      return result;
+    }
+
+    function generateBacktest30() {
+      const games = [];
+      let id = 1;
+      for (const [strat, count] of Object.entries(BACKTEST_DIST)) {
+        for (let i = 0; i < count; i++) {
+          const n = generateLine(strat);
+          if (n) games.push({ id: id++, strategy: strat, numbers: n });
+        }
+      }
+      return games;
+    }
+
+    function calculatePrize(numbers, winNums, bonus) {
+      const matches = numbers.filter(n => winNums.includes(n)).length;
+      const hasBonus = numbers.includes(bonus);
+      if (matches === 6) return { tier: 1, amount: 2000000000, label: '1등' };
+      if (matches === 5 && hasBonus) return { tier: 2, amount: 50000000, label: '2등' };
+      if (matches === 5) return { tier: 3, amount: 1500000, label: '3등' };
+      if (matches === 4) return { tier: 4, amount: 50000, label: '4등' };
+      if (matches === 3) return { tier: 5, amount: 5000, label: '5등' };
+      return { tier: 0, amount: 0, label: '낙첨' };
+    }
+
+    async function fetchWinNumbers(roundNum) {
+      const targetUrl = `https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=${roundNum}`;
+      const proxies = [
+        { url: `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`, type: 'direct' },
+        { url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`, type: 'wrapped' },
+        { url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`, type: 'direct' }
+      ];
+      for (const proxy of proxies) {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 8000);
+          const res = await fetch(proxy.url, { signal: ctrl.signal });
+          clearTimeout(timer);
+          if (!res.ok) continue;
+          let data;
+          if (proxy.type === 'wrapped') {
+            const wrapped = await res.json();
+            data = JSON.parse(wrapped.contents);
+          } else { data = await res.json(); }
+          if (data.returnValue === 'success') {
+            const nums = [data.drwtNo1, data.drwtNo2, data.drwtNo3, data.drwtNo4, data.drwtNo5, data.drwtNo6].sort((a,b) => a-b);
+            return { nums, bonus: data.bnusNo, date: data.drwNoDate, round: data.drwNo };
+          }
+        } catch (e) { continue; }
+      }
+      throw new Error('모든 프록시 실패');
+    }
+
+    function ballClass(n) {
+      if (n <= 10) return 'bg-yellow-400 text-yellow-900';
+      if (n <= 20) return 'bg-blue-500 text-white';
+      if (n <= 30) return 'bg-red-500 text-white';
+      if (n <= 40) return 'bg-gray-700 text-white';
+      return 'bg-green-600 text-white';
+    }
+
+    function Ball({ n, sm, hit, bonus }) {
+      const sz = sm ? 'w-7 h-7 text-xs' : 'w-9 h-9 text-sm';
+      return (
+        <div className={`${sz} rounded-full flex items-center justify-center font-bold shrink-0 ${ballClass(n)} ${hit ? 'ring-2 ring-orange-400 ring-offset-1' : ''} ${bonus ? 'ring-2 ring-purple-400 ring-offset-1' : ''}`}>{n}</div>
+      );
+    }
+
+    const Loader = () => <span className="icon-spin">⏳</span>;
+
+    const MAX_LINES = 50;
+    const BATCH_SIZE = 10;
+
+    function App() {
+      const [tab, setTab] = useState('gen');
+      const [round, setRound] = useState(1224);
+      const [saved, setSaved] = useState([]);
+      const [winInput, setWinInput] = useState(['','','','','','','']);
+      const [selRound, setSelRound] = useState(1224);
+      const [loading, setLoading] = useState(true);
+      const [toast, setToast] = useState('');
+      const [dark, setDark] = useState(false);
+      const [generating, setGenerating] = useState(false);
+      const [fetching, setFetching] = useState(false);
+      const [autoMatching, setAutoMatching] = useState(false);
+      const [pastRoundInput, setPastRoundInput] = useState('');
+      const [pastResult, setPastResult] = useState(null);
+      const [pastFetching, setPastFetching] = useState(false);
+      const [backtesting, setBacktesting] = useState(false);
+      const fileInputRef = useRef(null);
+
+      useEffect(() => { loadAll(); }, []);
+      useEffect(() => {
+        if (toast) { const t = setTimeout(() => setToast(''), 2500); return () => clearTimeout(t); }
+      }, [toast]);
+
+      async function loadAll() {
+        setLoading(true);
+        try {
+          const r = await storage.list('round:');
+          const rounds = [];
+          if (r && r.keys) {
+            for (const k of r.keys) {
+              try {
+                const v = await storage.get(k);
+                if (v && v.value) rounds.push(JSON.parse(v.value));
+              } catch (e) {}
+            }
+          }
+          rounds.sort((a,b) => b.round - a.round);
+          setSaved(rounds);
+          if (rounds.length > 0 && !rounds.find(r => r.round === selRound)) setSelRound(rounds[0].round);
+          try {
+            const s = await storage.get('settings:dark');
+            if (s && s.value === 'true') setDark(true);
+          } catch (e) {}
+        } catch (e) {}
+        setLoading(false);
+      }
+
+      function showToast(msg) { setToast(msg); }
+
+      async function toggleDark() {
+        const next = !dark;
+        setDark(next);
+        try { await storage.set('settings:dark', String(next)); } catch (e) {}
+      }
+
+      async function handleGen10(strategy) {
+        if (generating) return;
+        setGenerating(true);
+        const current = saved.find(r => r.round === round);
+        const currentCount = current ? current.games.length : 0;
+        if (currentCount >= MAX_LINES) { showToast('이미 50줄 가득'); setGenerating(false); return; }
+        const remaining = MAX_LINES - currentCount;
+        const wantCount = Math.min(BATCH_SIZE, remaining);
+        const batch = generateBatch(strategy, wantCount);
+        if (batch.length === 0) { showToast('생성 실패'); setGenerating(false); return; }
+        const data = current || { round, date: new Date().toISOString().split('T')[0], games: [], winNumbers: null, bonus: null, matches: null };
+        const startId = data.games.length > 0 ? Math.max(...data.games.map(g => g.id)) + 1 : 1;
+        data.games = [...data.games, ...batch.map((b, i) => ({ id: startId + i, ...b }))];
+        data.matches = null;
+        try {
+          await storage.set(`round:${round}`, JSON.stringify(data));
+          const lbl = strategy === 'MIX' ? '믹스' : `전략 ${strategy}`;
+          showToast(`${lbl} ${batch.length}줄 추가 (${data.games.length}/${MAX_LINES})`);
+          await loadAll();
+        } catch (e) { showToast('저장 실패'); }
+        setGenerating(false);
+      }
+
+      async function handleClearRound() {
+        if (!confirm(`${round}회차 모두 삭제?`)) return;
+        try { await storage.delete(`round:${round}`); showToast('초기화'); await loadAll(); } catch (e) {}
+      }
+      async function handleDelete(rd) {
+        if (!confirm(`${rd}회차 삭제?`)) return;
+        try { await storage.delete(`round:${rd}`); showToast('삭제'); await loadAll(); } catch (e) {}
+      }
+
+      async function handleAutoFetch() {
+        if (fetching) return;
+        setFetching(true);
+        showToast('동행복권 데이터 가져오는 중...');
+        try {
+          const result = await fetchWinNumbers(selRound);
+          setWinInput([...result.nums.map(String), String(result.bonus)]);
+          showToast(`✓ ${selRound}회차 (${result.date})`);
+        } catch (e) { showToast('자동 실패. 수동 입력해주세요'); }
+        setFetching(false);
+      }
+
+      async function handleAutoMatchAll() {
+        if (autoMatching) return;
+        const unmatched = saved.filter(r => !r.matches && r.games.length > 0);
+        if (unmatched.length === 0) { showToast('매칭할 회차 없음'); return; }
+        if (!confirm(`미매칭 ${unmatched.length}개 자동 매칭. 계속?`)) return;
+        setAutoMatching(true);
+        let success = 0, failed = 0;
+        for (const r of unmatched) {
+          try {
+            showToast(`${r.round}회차 (${success+failed+1}/${unmatched.length})`);
+            const result = await fetchWinNumbers(r.round);
+            const matches = r.games.map(g => ({ ...g, ...calculatePrize(g.numbers, result.nums, result.bonus) }));
+            r.winNumbers = result.nums; r.bonus = result.bonus; r.matches = matches;
+            await storage.set(`round:${r.round}`, JSON.stringify(r));
+            success++;
+            await new Promise(rs => setTimeout(rs, 500));
+          } catch (e) { failed++; }
+        }
+        showToast(`✓ 성공 ${success} / 실패 ${failed}`);
+        await loadAll();
+        setAutoMatching(false);
+      }
+
+      async function handleMatch() {
+        const nums = winInput.slice(0,6).map(n => parseInt(n));
+        const bonus = parseInt(winInput[6]);
+        if (nums.some(n => isNaN(n) || n < 1 || n > 45) || isNaN(bonus) || bonus < 1 || bonus > 45) {
+          showToast('1~45 숫자 모두 입력'); return;
+        }
+        if (new Set(nums).size !== 6) { showToast('본번호 6개 모두 달라야'); return; }
+        const target = saved.find(r => r.round === selRound);
+        if (!target) { showToast(`${selRound}회차 데이터 없음`); return; }
+        const matches = target.games.map(g => ({ ...g, ...calculatePrize(g.numbers, nums, bonus) }));
+        target.winNumbers = nums; target.bonus = bonus; target.matches = matches;
+        try {
+          await storage.set(`round:${selRound}`, JSON.stringify(target));
+          showToast('매칭 완료!'); await loadAll();
+          setWinInput(['','','','','','','']);
+        } catch (e) { showToast('저장 실패'); }
+      }
+
+      async function handlePastFetch() {
+        const r = parseInt(pastRoundInput);
+        if (isNaN(r) || r < 1 || r > 1300) { showToast('1~1300 회차 입력'); return; }
+        if (pastFetching) return;
+        setPastFetching(true);
+        setPastResult(null);
+        try {
+          const result = await fetchWinNumbers(r);
+          setPastResult(result);
+          showToast(`✓ ${r}회차 조회`);
+        } catch (e) { showToast('조회 실패'); }
+        setPastFetching(false);
+      }
+
+      async function handleBacktest() {
+        if (!pastResult || backtesting) return;
+        const exists = saved.find(r => r.round === pastResult.round);
+        if (exists && !confirm(`${pastResult.round}회차 데이터 있음. 덮어쓸까?`)) return;
+        setBacktesting(true);
+        const games = generateBacktest30();
+        const matches = games.map(g => ({ ...g, ...calculatePrize(g.numbers, pastResult.nums, pastResult.bonus) }));
+        const data = { round: pastResult.round, date: pastResult.date, games, winNumbers: pastResult.nums, bonus: pastResult.bonus, matches, backtest: true };
+        try {
+          await storage.set(`round:${pastResult.round}`, JSON.stringify(data));
+          const wins = matches.filter(m => m.tier > 0);
+          const totalAmt = matches.reduce((s, m) => s + m.amount, 0);
+          showToast(`백테스트: ${wins.length}당첨 / +${totalAmt.toLocaleString()}원`);
+          await loadAll();
+          setSelRound(pastResult.round);
+        } catch (e) { showToast('저장 실패'); }
+        setBacktesting(false);
+      }
+
+      async function handleSaveAsRecord() {
+        if (!pastResult) return;
+        const exists = saved.find(r => r.round === pastResult.round);
+        if (exists) { showToast('이미 저장됨'); return; }
+        const data = { round: pastResult.round, date: pastResult.date, games: [], winNumbers: pastResult.nums, bonus: pastResult.bonus, matches: null, recordOnly: true };
+        try {
+          await storage.set(`round:${pastResult.round}`, JSON.stringify(data));
+          showToast(`${pastResult.round}회차 기록 저장`);
+          await loadAll();
+        } catch (e) { showToast('저장 실패'); }
+      }
+
+      async function handleExport() {
+        try {
+          const all = await storage.list('round:');
+          const data = { exportDate: new Date().toISOString(), rounds: [] };
+          if (all && all.keys) {
+            for (const k of all.keys) {
+              const v = await storage.get(k);
+              if (v && v.value) data.rounds.push(JSON.parse(v.value));
+            }
+          }
+          const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = `로또백업_${new Date().toISOString().split('T')[0]}.json`;
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a); URL.revokeObjectURL(url);
+          showToast('백업 다운로드!');
+        } catch (e) { showToast('백업 실패'); }
+      }
+
+      function handleImportClick() { fileInputRef.current?.click(); }
+
+      async function handleImport(e) {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const data = JSON.parse(text);
+          if (!data.rounds || !Array.isArray(data.rounds)) throw new Error('잘못된 파일');
+          if (!confirm(`${data.rounds.length}개 복원, 병합. 계속?`)) return;
+          for (const r of data.rounds) {
+            if (r.round && r.games !== undefined) await storage.set(`round:${r.round}`, JSON.stringify(r));
+          }
+          showToast(`${data.rounds.length}개 복원!`);
+          await loadAll();
+        } catch (err) { showToast('복원 실패: ' + err.message); }
+        e.target.value = '';
+      }
+
+      const stats = (() => {
+        let totalCost = 0, totalWin = 0;
+        const tiers = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+        let matchedRounds = 0;
+        const numHits = {};
+        for (let i = 1; i <= 45; i++) numHits[i] = 0;
+        const stratResults = {};
+        Object.keys(STRATEGIES).forEach(s => stratResults[s] = { lines: 0, wins: 0, totalAmount: 0 });
+        for (const r of saved) {
+          if (r.recordOnly) {
+            if (r.winNumbers) for (const n of r.winNumbers) numHits[n]++;
+            continue;
+          }
+          totalCost += r.games.length * 1000;
+          for (const g of r.games) { if (stratResults[g.strategy]) stratResults[g.strategy].lines++; }
+          if (r.matches) {
+            matchedRounds++;
+            for (const m of r.matches) {
+              totalWin += m.amount;
+              if (m.tier > 0) {
+                tiers[m.tier]++;
+                if (stratResults[m.strategy]) {
+                  stratResults[m.strategy].wins++;
+                  stratResults[m.strategy].totalAmount += m.amount;
+                }
+              }
+            }
+            if (r.winNumbers) for (const n of r.winNumbers) numHits[n]++;
+          }
+        }
+        const recommended = Object.entries(stratResults)
+          .filter(([_, v]) => v.lines > 0)
+          .map(([s, v]) => ({ s, ...v, roi: v.lines > 0 ? (v.totalAmount / (v.lines * 1000)) : 0 }))
+          .sort((a, b) => b.roi - a.roi).slice(0, 3);
+        return { totalCost, totalWin, tiers, matchedRounds, profit: totalWin - totalCost, numHits, stratResults, recommended };
+      })();
+
+      const currentRound = saved.find(r => r.round === round);
+      const currentCount = currentRound ? currentRound.games.length : 0;
+      const remaining = MAX_LINES - currentCount;
+      const unmatchedCount = saved.filter(r => !r.matches && r.games.length > 0).length;
+
+      const bg = dark ? 'bg-slate-900' : 'bg-gradient-to-br from-slate-50 to-slate-100';
+      const card = dark ? 'bg-slate-800 border border-slate-700' : 'bg-white';
+      const text = dark ? 'text-slate-100' : 'text-slate-900';
+      const textDim = dark ? 'text-slate-400' : 'text-slate-500';
+      const tabBar = dark ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200';
+      const inputBase = dark ? 'border-slate-600 bg-slate-700 text-white' : 'border-slate-200 bg-white';
+
+      return (
+        <div className={`min-h-screen ${bg} ${text} pb-24 transition-colors`}>
+          <div className="bg-gradient-to-r from-emerald-700 to-emerald-900 text-white px-4 py-4 shadow-lg sticky top-0 z-20">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-xl font-bold flex items-center gap-2">✨ 로또 분석기 <span className="text-xs font-normal opacity-75">v4</span></h1>
+                <p className="text-emerald-100 text-xs mt-0.5">7전략 · 자동 불러오기 · 백테스트</p>
+              </div>
+              <button onClick={toggleDark} className="p-2 bg-white/10 rounded-full active:scale-90 text-xl">{dark ? '☀️' : '🌙'}</button>
+            </div>
+          </div>
+
+          {toast && (<div className="fixed top-20 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-5 py-2.5 rounded-full shadow-2xl z-50 text-sm font-medium max-w-[90%] text-center">{toast}</div>)}
+
+          <div className="px-4 py-4">
+            {tab === 'gen' && (
+              <div className="space-y-4">
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <label className={`text-xs ${textDim} font-semibold`}>회차 선택</label>
+                  <input type="number" value={round} onChange={e => setRound(parseInt(e.target.value) || 1224)}
+                    className={`w-full mt-2 px-4 py-3 text-2xl font-bold text-center border-2 ${inputBase} rounded-xl focus:border-emerald-500 focus:outline-none`} />
+                  <div className="mt-3 flex items-center justify-between">
+                    <div className={`text-sm ${textDim}`}>현재 저장</div>
+                    <div className="font-bold text-lg"><span className={currentCount >= MAX_LINES ? 'text-red-500' : 'text-emerald-600'}>{currentCount}</span><span className={textDim}>/{MAX_LINES}줄</span></div>
+                  </div>
+                  <div className={`mt-2 h-2 rounded-full ${dark ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                    <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-full transition-all" style={{ width: `${(currentCount / MAX_LINES) * 100}%` }} />
+                  </div>
+                  {currentCount > 0 && (<button onClick={handleClearRound} className="w-full mt-3 text-xs text-red-500 py-2 rounded-lg active:scale-95">{round}회차 전체 초기화</button>)}
+                </div>
+
+                {remaining > 0 ? (<>
+                  <div className={`text-xs ${textDim} font-semibold mb-1`}>전략 선택 (10줄씩 추가)</div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {Object.entries(STRATEGIES).map(([k, s]) => (
+                      <button key={k} onClick={() => handleGen10(k)} disabled={generating} className={`bg-gradient-to-br ${s.color} text-white rounded-2xl p-3 shadow-md active:scale-95 disabled:opacity-50`}>
+                        <div className="text-xl mb-0.5">{s.emoji}</div>
+                        <div className="font-bold text-sm">전략 {k} +10</div>
+                        <div className="text-xs opacity-90 mt-0.5">{s.name}</div>
+                        <div className="text-[10px] opacity-70 mt-0.5">{s.desc}</div>
+                      </button>
+                    ))}
+                    <button onClick={() => handleGen10('MIX')} disabled={generating} className="bg-gradient-to-br from-slate-700 to-slate-900 text-white rounded-2xl p-3 shadow-md active:scale-95 disabled:opacity-50 col-span-2">
+                      <div className="text-xl mb-0.5">🎰</div>
+                      <div className="font-bold text-sm">MIX +10 (전체 균형)</div>
+                      <div className="text-xs opacity-90 mt-0.5">7전략 가중 분산</div>
+                    </button>
+                  </div>
+                </>) : (<div className={`${card} rounded-2xl shadow-md p-6 text-center`}><div className="text-4xl mb-2">🏆</div><div className="font-bold text-emerald-600">50줄 모두 저장!</div></div>)}
+
+                {currentRound && currentRound.games.length > 0 && (
+                  <div className={`${card} rounded-2xl shadow-md p-3`}>
+                    <div className={`text-xs ${textDim} font-semibold mb-2 px-1`}>{round}회차 저장된 번호</div>
+                    <div className="space-y-1.5 max-h-96 overflow-y-auto no-scrollbar">
+                      {currentRound.games.slice().reverse().map(g => (
+                        <div key={g.id} className={`flex items-center gap-1.5 py-1 px-2 rounded ${dark ? 'hover:bg-slate-700' : 'hover:bg-slate-50'}`}>
+                          <span className={`text-xs ${textDim} w-6`}>{g.id}</span>
+                          <span className={`text-xs font-bold ${textDim} w-3`}>{g.strategy}</span>
+                          <div className="flex gap-1 flex-wrap">{g.numbers.map(n => <Ball key={n} n={n} sm />)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {tab === 'saved' && (
+              <div className="space-y-3">
+                {unmatchedCount > 0 && (
+                  <button onClick={handleAutoMatchAll} disabled={autoMatching} className="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-3.5 rounded-2xl shadow-lg font-bold flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50">
+                    {autoMatching ? <Loader /> : <span>⚡</span>} 미매칭 {unmatchedCount}개 자동 매칭
+                  </button>
+                )}
+                {loading ? <div className={`text-center py-12 ${textDim}`}>로딩 중...</div>
+                  : saved.length === 0 ? (<div className={`text-center py-16 ${textDim}`}><div className="text-4xl mb-3 opacity-30">💾</div><p>저장된 번호 없음</p></div>)
+                  : saved.map(r => (
+                    <div key={r.round} className={`${card} rounded-2xl shadow-md overflow-hidden`}>
+                      <div className={`px-4 py-3 ${dark ? 'bg-slate-700' : 'bg-gradient-to-r from-emerald-50 to-teal-50'} flex items-center justify-between`}>
+                        <div>
+                          <div className={`font-bold text-lg ${dark ? 'text-emerald-300' : 'text-emerald-900'} flex items-center gap-2`}>
+                            {r.round}회차
+                            {r.backtest && <span className="text-xs bg-purple-500 text-white px-2 py-0.5 rounded-full font-normal">백테스트</span>}
+                            {r.recordOnly && <span className="text-xs bg-slate-500 text-white px-2 py-0.5 rounded-full font-normal">기록</span>}
+                          </div>
+                          <div className={`text-xs ${textDim}`}>{r.date} · {r.games.length}줄</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {r.matches && <span className="text-xs bg-emerald-600 text-white px-2 py-0.5 rounded-full font-semibold">매칭됨</span>}
+                          <button onClick={() => handleDelete(r.round)} className="p-2 text-red-500 active:scale-90 text-base">🗑</button>
+                        </div>
+                      </div>
+                      {r.winNumbers && (
+                        <div className={`px-4 py-2 ${dark ? 'bg-yellow-900/30 border-y border-yellow-800' : 'bg-yellow-50 border-y border-yellow-100'}`}>
+                          <div className={`text-xs ${textDim} mb-1`}>당첨번호</div>
+                          <div className="flex items-center gap-1">{r.winNumbers.map(n => <Ball key={n} n={n} sm />)}<span className={`text-xs ${textDim} mx-1`}>+</span><Ball n={r.bonus} sm bonus /></div>
+                        </div>
+                      )}
+                      {r.games.length > 0 && (
+                        <div className="p-3 space-y-1.5 max-h-72 overflow-y-auto no-scrollbar">
+                          {r.games.map(g => {
+                            const m = r.matches?.find(x => x.id === g.id);
+                            return (
+                              <div key={g.id} className={`flex items-center gap-1.5 py-1 px-2 rounded ${m && m.tier > 0 ? (dark ? 'bg-yellow-900/30 ring-1 ring-yellow-700' : 'bg-yellow-50 ring-1 ring-yellow-300') : ''}`}>
+                                <span className={`text-xs ${textDim} w-5`}>{g.id}</span>
+                                <span className={`text-xs font-bold ${textDim} w-3`}>{g.strategy}</span>
+                                <div className="flex gap-1 flex-wrap">{g.numbers.map(n => <Ball key={n} n={n} sm hit={r.winNumbers?.includes(n)} bonus={r.bonus === n} />)}</div>
+                                {m && m.tier > 0 && <span className="text-xs font-bold text-orange-500 ml-auto">{m.label}</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {tab === 'match' && (
+              <div className="space-y-4">
+                <div className={`${card} rounded-2xl shadow-md p-4 border-2 border-purple-200 ${dark ? 'border-purple-900' : ''}`}>
+                  <div className="font-bold mb-3 flex items-center gap-2">📜 과거 회차 조회 + 백테스트</div>
+                  <div className="flex gap-2 mb-2">
+                    <input type="number" placeholder="1~1300" value={pastRoundInput} onChange={e => setPastRoundInput(e.target.value)}
+                      className={`flex-1 px-3 py-2.5 text-center text-base font-semibold border-2 ${inputBase} rounded-xl focus:border-purple-500 focus:outline-none`} min="1" max="1300" />
+                    <button onClick={handlePastFetch} disabled={pastFetching || !pastRoundInput} className="bg-purple-500 text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-1 active:scale-95 disabled:opacity-50">
+                      {pastFetching ? <Loader /> : <span>☁</span>} 조회
+                    </button>
+                  </div>
+                  <div className={`text-[11px] ${textDim} mb-3`}>※ 1~1223 회차 조회 가능 (과거 모든 회차)</div>
+                  {pastResult && (
+                    <div className={`${dark ? 'bg-slate-700' : 'bg-purple-50'} rounded-xl p-3 space-y-3`}>
+                      <div>
+                        <div className={`text-xs font-semibold ${dark ? 'text-purple-300' : 'text-purple-700'}`}>{pastResult.round}회차 · {pastResult.date}</div>
+                        <div className="flex items-center gap-1 mt-1.5">{pastResult.nums.map(n => <Ball key={n} n={n} sm />)}<span className={`text-xs ${textDim} mx-1`}>+</span><Ball n={pastResult.bonus} sm bonus /></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button onClick={handleSaveAsRecord} className={`${dark ? 'bg-slate-600' : 'bg-white'} ${text} py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-1 active:scale-95 border border-purple-300`}>💾 기록 저장</button>
+                        <button onClick={handleBacktest} disabled={backtesting} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white py-2.5 rounded-lg text-sm font-bold flex items-center justify-center gap-1 active:scale-95 disabled:opacity-50">{backtesting ? <Loader /> : <span>🧪</span>} 30줄 백테스트</button>
+                      </div>
+                      {(() => {
+                        const bt = saved.find(r => r.round === pastResult.round && r.backtest);
+                        if (!bt) return null;
+                        const wins = bt.matches?.filter(m => m.tier > 0) || [];
+                        const totalWin = bt.matches?.reduce((s, m) => s + m.amount, 0) || 0;
+                        return (
+                          <div className={`${dark ? 'bg-slate-800' : 'bg-white'} rounded-lg p-3 border border-purple-200`}>
+                            <div className="text-xs font-semibold text-purple-600">백테스트 결과</div>
+                            <div className={`text-xl font-bold mt-0.5 ${totalWin > 0 ? 'text-orange-500' : textDim}`}>{totalWin > 0 ? `+${totalWin.toLocaleString()}원` : '낙첨'}</div>
+                            <div className={`text-xs ${textDim} mt-0.5`}>{wins.length > 0 ? `${wins.length}게임 당첨` : '30줄 모두 낙첨'} · 비용 30,000원</div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <label className={`text-xs ${textDim} font-semibold mb-2 block`}>내가 저장한 회차 매칭</label>
+                  <select value={selRound} onChange={e => setSelRound(parseInt(e.target.value))} className={`w-full px-4 py-3 text-lg font-semibold border-2 ${dark ? 'border-emerald-700 bg-slate-700 text-white' : 'border-emerald-200 bg-white'} rounded-xl`}>
+                    {saved.length === 0 && <option value="0">저장된 회차 없음</option>}
+                    {saved.filter(r => r.games.length > 0).map(r => (<option key={r.round} value={r.round}>{r.round}회차 ({r.games.length}줄){r.matches ? ' · 매칭됨' : ''}</option>))}
+                  </select>
+                </div>
+
+                <button onClick={handleAutoFetch} disabled={fetching || saved.length === 0} className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-3.5 rounded-2xl shadow-lg font-bold flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50">
+                  {fetching ? <Loader /> : <span>☁</span>} {fetching ? '불러오는 중...' : `${selRound}회차 당첨번호 자동 불러오기`}
+                </button>
+
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className={`text-sm ${textDim} font-semibold`}>당첨번호 6개 + 보너스</div>
+                    <button onClick={() => setWinInput(['','','','','','',''])} className={`text-xs ${textDim}`}>초기화</button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    {[0,1,2,3,4,5].map(i => (
+                      <input key={i} type="number" placeholder={`${i+1}`} value={winInput[i]} onChange={e => { const w = [...winInput]; w[i] = e.target.value; setWinInput(w); }}
+                        className={`px-3 py-3 text-center text-lg font-bold border-2 ${inputBase} rounded-xl focus:border-emerald-500 focus:outline-none`} min="1" max="45" />
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-purple-500 font-bold text-sm">보너스</span>
+                    <input type="number" placeholder="번호" value={winInput[6]} onChange={e => { const w = [...winInput]; w[6] = e.target.value; setWinInput(w); }}
+                      className={`flex-1 px-3 py-3 text-center text-lg font-bold border-2 ${dark ? 'border-purple-600 bg-slate-700 text-white' : 'border-purple-300 bg-white'} rounded-xl focus:border-purple-500 focus:outline-none`} min="1" max="45" />
+                  </div>
+                </div>
+
+                <button onClick={handleMatch} className="w-full bg-gradient-to-r from-orange-500 to-red-500 text-white py-4 rounded-2xl shadow-lg font-bold text-lg flex items-center justify-center gap-2 active:scale-95">🏆 매칭하기</button>
+
+                {(() => {
+                  const t = saved.find(r => r.round === selRound);
+                  if (!t || !t.matches) return null;
+                  const wins = t.matches.filter(m => m.tier > 0);
+                  const totalWin = t.matches.reduce((s, m) => s + m.amount, 0);
+                  return (
+                    <div className={`${card} rounded-2xl shadow-md p-4 space-y-3`}>
+                      <div className="text-center">
+                        <div className={`text-xs ${textDim}`}>{selRound}회차 결과</div>
+                        <div className={`text-3xl font-bold mt-1 ${totalWin > 0 ? 'text-orange-500' : textDim}`}>{totalWin > 0 ? `+${totalWin.toLocaleString()}원` : '낙첨'}</div>
+                        <div className={`text-xs ${textDim} mt-0.5`}>투자 {(t.games.length * 1000).toLocaleString()} · 손익 {(totalWin - t.games.length * 1000).toLocaleString()}원</div>
+                      </div>
+                      {wins.length > 0 && (
+                        <div className={`space-y-1.5 pt-2 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
+                          <div className={`text-xs font-semibold ${textDim}`}>당첨 게임 ({wins.length})</div>
+                          {wins.map(m => (
+                            <div key={m.id} className={`flex items-center gap-2 ${dark ? 'bg-yellow-900/30' : 'bg-yellow-50'} p-2 rounded-lg`}>
+                              <span className="text-xs font-bold text-orange-500 w-10">{m.label}</span>
+                              <div className="flex gap-1 flex-wrap">{m.numbers.map(n => <Ball key={n} n={n} sm hit={t.winNumbers.includes(n)} bonus={t.bonus === n} />)}</div>
+                              <span className="text-xs font-bold text-orange-500 ml-auto">+{m.amount.toLocaleString()}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {tab === 'stats' && (
+              <div className="space-y-4">
+                <div className="bg-gradient-to-br from-emerald-600 to-emerald-800 text-white rounded-2xl shadow-lg p-5">
+                  <div className="text-emerald-100 text-sm">누적 손익</div>
+                  <div className={`text-4xl font-bold mt-1 ${stats.profit >= 0 ? 'text-yellow-200' : 'text-red-200'}`}>{stats.profit >= 0 ? '+' : ''}{stats.profit.toLocaleString()}원</div>
+                  <div className="text-emerald-100 text-xs mt-2">투자 {stats.totalCost.toLocaleString()} · 회수 {stats.totalWin.toLocaleString()}</div>
+                  {stats.totalCost > 0 && <div className="text-emerald-100 text-xs mt-1">ROI {((stats.totalWin / stats.totalCost) * 100).toFixed(1)}%</div>}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className={`${card} rounded-2xl shadow-md p-4 text-center`}><div className={`text-xs ${textDim}`}>저장 회차</div><div className="text-3xl font-bold text-emerald-600 mt-1">{saved.length}</div></div>
+                  <div className={`${card} rounded-2xl shadow-md p-4 text-center`}><div className={`text-xs ${textDim}`}>매칭 완료</div><div className="text-3xl font-bold text-blue-500 mt-1">{stats.matchedRounds}</div></div>
+                </div>
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <div className="text-sm font-bold mb-3">등수별 적중</div>
+                  <div className="space-y-2">
+                    {[1,2,3,4,5].map(t => {
+                      const c = stats.tiers[t] || 0;
+                      const labels = { 1: '1등', 2: '2등', 3: '3등', 4: '4등', 5: '5등' };
+                      const colors = { 1: 'bg-purple-500', 2: 'bg-pink-500', 3: 'bg-orange-500', 4: 'bg-yellow-500', 5: 'bg-emerald-500' };
+                      return (
+                        <div key={t} className="flex items-center gap-3">
+                          <span className={`${colors[t]} text-white text-xs font-bold px-2.5 py-1 rounded-full w-12 text-center`}>{labels[t]}</span>
+                          <div className={`flex-1 ${dark ? 'bg-slate-700' : 'bg-slate-100'} rounded-full h-6 overflow-hidden`}><div className={`${colors[t]} h-full transition-all`} style={{ width: c > 0 ? `${Math.min(c * 20, 100)}%` : '0%' }} /></div>
+                          <span className="font-bold w-8 text-right">{c}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                {stats.recommended.length > 0 && stats.matchedRounds > 0 && (
+                  <div className={`${card} rounded-2xl shadow-md p-4`}>
+                    <div className="text-sm font-bold mb-3 flex items-center gap-2">🎯 추천 전략 (실적순)</div>
+                    <div className="space-y-2">
+                      {stats.recommended.map((r, i) => (
+                        <div key={r.s} className={`flex items-center gap-3 p-2 rounded-lg ${i === 0 ? (dark ? 'bg-emerald-900/30' : 'bg-emerald-50') : ''}`}>
+                          <span className="text-xl">{STRATEGIES[r.s]?.emoji}</span>
+                          <div className="flex-1"><div className="font-bold text-sm">전략 {r.s} · {STRATEGIES[r.s]?.name}</div><div className={`text-xs ${textDim}`}>{r.lines}줄 / {r.wins}당첨 · ROI {(r.roi * 100).toFixed(0)}%</div></div>
+                          {i === 0 && <span className="text-xs bg-emerald-500 text-white px-2 py-0.5 rounded-full font-bold">BEST</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {stats.matchedRounds > 0 && (
+                  <div className={`${card} rounded-2xl shadow-md p-4`}>
+                    <div className="text-sm font-bold mb-3 flex items-center gap-2">📊 당첨번호 출현 빈도</div>
+                    <div className="grid grid-cols-9 gap-1">
+                      {Array.from({length: 45}, (_, i) => i + 1).map(n => {
+                        const c = stats.numHits[n];
+                        const max = Math.max(...Object.values(stats.numHits), 1);
+                        const intensity = c / max;
+                        return (
+                          <div key={n} className="text-center">
+                            <div className={`w-full aspect-square rounded flex items-center justify-center text-[10px] font-bold ${c > 0 ? ballClass(n) : (dark ? 'bg-slate-700 text-slate-500' : 'bg-slate-100 text-slate-400')}`} style={{ opacity: c > 0 ? 0.4 + intensity * 0.6 : 1 }}>{n}</div>
+                            <div className={`text-[9px] mt-0.5 ${textDim}`}>{c}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <div className="text-sm font-bold mb-3">7전략 가이드</div>
+                  <div className="space-y-1.5 text-xs">
+                    {Object.entries(STRATEGIES).map(([k, s]) => (
+                      <div key={k} className={`flex items-start gap-2 py-1.5 border-b ${dark ? 'border-slate-700' : 'border-slate-100'} last:border-0`}>
+                        <span className="text-lg">{s.emoji}</span>
+                        <div className="flex-1"><div className="font-semibold">전략 {k} · {s.name}</div><div className={textDim}>{s.desc}</div></div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'set' && (
+              <div className="space-y-4">
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <div className="font-bold mb-3 flex items-center gap-2">🧪 백테스트 사용법</div>
+                  <div className={`text-xs ${textDim} space-y-1.5 leading-relaxed`}>
+                    <p>매칭 탭의 <strong>"과거 회차 조회"</strong>에서 1~1223 사이 회차 입력:</p>
+                    <p>① <strong>당첨번호 조회</strong> - 그 회차 결과 보기</p>
+                    <p>② <strong>기록 저장</strong> - 통계용 회차 추가</p>
+                    <p>③ <strong>30줄 백테스트</strong> - 가상 결과 시뮬</p>
+                  </div>
+                </div>
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <div className="font-bold mb-3 flex items-center gap-2">☁️ 자동 불러오기 안내</div>
+                  <div className={`text-xs ${textDim} space-y-1.5 leading-relaxed`}>
+                    <p>매칭 탭에서 동행복권 공식 API에서 자동 가져옴.</p>
+                    <p className="text-amber-600 mt-2">⚠️ 공용 프록시 사용. 가끔 실패 시 수동 입력.</p>
+                  </div>
+                </div>
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <div className="font-bold mb-3 flex items-center gap-2">⬇️ 데이터 백업/복원</div>
+                  <button onClick={handleExport} className="w-full bg-blue-500 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2 active:scale-95 mb-2">⬇️ JSON 백업</button>
+                  <button onClick={handleImportClick} className={`w-full ${dark ? 'bg-slate-700' : 'bg-slate-200'} py-3 rounded-xl font-semibold flex items-center justify-center gap-2 active:scale-95`}>⬆️ JSON 복원</button>
+                  <input ref={fileInputRef} type="file" accept=".json" onChange={handleImport} className="hidden" />
+                </div>
+                <div className={`${card} rounded-2xl shadow-md p-4`}>
+                  <div className="font-bold mb-3">화면 모드</div>
+                  <button onClick={toggleDark} className="w-full flex items-center justify-between p-3 rounded-xl border-2 border-emerald-500 active:scale-95">
+                    <span className="font-semibold">{dark ? '🌙 다크' : '☀️ 라이트'}</span>
+                    <span className={`text-xs ${textDim}`}>탭하여 변경</span>
+                  </button>
+                </div>
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
+                  <div className="font-bold mb-1">⚠️ 안내</div>
+                  <p className="leading-relaxed">로또는 무작위, 어떤 분석도 당첨 보장 안 됨. 통계 참고용 (1336 도박상담).</p>
+                  <p className="mt-2 font-semibold">v4.0 · 2026.5.10 · 휴대폰 앱 버전</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className={`fixed bottom-0 left-0 right-0 ${tabBar} border-t shadow-2xl z-30`} style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+            <div className="grid grid-cols-5">
+              {[
+                { id: 'gen', icon: '✨', label: '생성' },
+                { id: 'saved', icon: '💾', label: '저장' },
+                { id: 'match', icon: '🏆', label: '매칭' },
+                { id: 'stats', icon: '📊', label: '통계' },
+                { id: 'set', icon: '⚙️', label: '설정' }
+              ].map(t => {
+                const active = tab === t.id;
+                return (
+                  <button key={t.id} onClick={() => setTab(t.id)} className={`py-2.5 flex flex-col items-center gap-1 transition-colors relative ${active ? 'text-emerald-600' : textDim}`}>
+                    <span className={`text-xl ${active ? 'scale-110' : ''} transition-transform`}>{t.icon}</span>
+                    <span className="text-[11px] font-semibold">{t.label}</span>
+                    {active && <div className="absolute bottom-0 w-8 h-0.5 bg-emerald-500 rounded-full" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
