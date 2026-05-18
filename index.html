@@ -85,7 +85,7 @@ const Cpu = _ic([{t:'rect',x:4,y:4,width:16,height:16,rx:2},{t:'rect',x:9,y:9,wi
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 6;
+const APP_VERSION = 7;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -369,12 +369,23 @@ function Ball({ n, sm, hit, bonus }) {
 const MAX_LINES = 50;
 const BATCH_SIZE = 10;
 
+// ===== 오늘 날짜 기준 '구매 대상' 회차 자동 계산 =====
+// 기준: 1224회 추첨 = 2026-05-16(토) 21:00 KST. 추첨이 지나면 자동으로 다음 회차.
+function getDefaultRound() {
+  const BASE_ROUND = 1225; // 1224 추첨 직후 사야 할 회차
+  const BASE_DRAW = new Date('2026-05-16T21:00:00+09:00'); // 1224 추첨 완료 시각
+  const now = new Date();
+  if (now < BASE_DRAW) return 1224; // 아직 1224 추첨 전
+  const weeks = Math.floor((now - BASE_DRAW) / (7 * 24 * 60 * 60 * 1000));
+  return BASE_ROUND + weeks;
+}
+
 function App() {
   const [tab, setTab] = useState('gen');
-  const [round, setRound] = useState(1224);
+  const [round, setRound] = useState(getDefaultRound());
   const [saved, setSaved] = useState([]);
   const [winInput, setWinInput] = useState(['', '', '', '', '', '', '']);
-  const [selRound, setSelRound] = useState(1224);
+  const [selRound, setSelRound] = useState(getDefaultRound());
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState('');
   const [dark, setDark] = useState(false);
@@ -700,7 +711,7 @@ function App() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold flex items-center gap-2">
-              <Sparkles className="w-5 h-5" /> 로또 분석기 <span className="text-xs font-normal opacity-75">v6</span>
+              <Sparkles className="w-5 h-5" /> 로또 분석기 <span className="text-xs font-normal opacity-75">v7</span>
             </h1>
             <p className="text-emerald-100 text-xs mt-0.5">자동 전략 엔진 · 매주 자동 갱신</p>
           </div>
@@ -729,7 +740,7 @@ function App() {
           <div className="space-y-4">
             <div className={`${card} rounded-2xl shadow-md p-4`}>
               <label className={`text-xs ${textDim} font-semibold`}>회차 선택</label>
-              <input type="number" value={round} onChange={e => setRound(parseInt(e.target.value) || 1224)}
+              <input type="number" value={round} onChange={e => setRound(parseInt(e.target.value) || getDefaultRound())}
                 className={`w-full mt-2 px-4 py-3 text-2xl font-bold text-center border-2 ${inputBase} rounded-xl focus:border-emerald-500 focus:outline-none`} />
               <div className="mt-3 flex items-center justify-between">
                 <div className={`text-sm ${textDim}`}>현재 저장</div>
