@@ -1,4 +1,4 @@
 {
-  "version": 7,
-  "note": "회차 자동 진행 + 저장 기능 복구"
+  "version": 8,
+  "note": "CORS 프록시를 Cloudflare Worker로 교체"
 }

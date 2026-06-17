@@ -85,7 +85,7 @@ const Cpu = _ic([{t:'rect',x:4,y:4,width:16,height:16,rx:2},{t:'rect',x:9,y:9,wi
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 7;
+const APP_VERSION = 8;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -324,6 +324,7 @@ function calculatePrize(numbers, winNums, bonus) {
 async function fetchWinNumbers(roundNum) {
   const targetUrl = `https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=${roundNum}`;
   const proxies = [
+    { url: `https://lotto-proxy.bmw11813.workers.dev/?url=${encodeURIComponent(targetUrl)}`, type: 'direct' },
     { url: `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`, type: 'direct' },
     { url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`, type: 'wrapped' },
     { url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`, type: 'direct' }
