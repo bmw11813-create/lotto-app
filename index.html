@@ -85,7 +85,7 @@ const Cpu = _ic([{t:'rect',x:4,y:4,width:16,height:16,rx:2},{t:'rect',x:9,y:9,wi
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 9;
+const APP_VERSION = 10;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -423,7 +423,7 @@ function Ball({ n, sm, hit, bonus }) {
 }
 
 const MAX_LINES = 50;
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 5;
 
 // ===== 오늘 날짜 기준 '구매 대상' 회차 자동 계산 =====
 // 기준: 1224회 추첨 = 2026-05-16(토) 21:00 KST. 추첨이 지나면 자동으로 다음 회차.
@@ -853,13 +853,13 @@ function App() {
 
             {remaining > 0 ? (
               <>
-                <div className={`text-xs ${textDim} font-semibold mb-1`}>전략 선택 (10줄씩 추가)</div>
+                <div className={`text-xs ${textDim} font-semibold mb-1`}>전략 선택 (5줄씩 추가)</div>
                 <div className="grid grid-cols-2 gap-2.5">
                   {Object.entries(STRATEGIES).map(([k, s]) => (
                     <button key={k} onClick={() => handleGen10(k)} disabled={generating}
                       className={`bg-gradient-to-br ${s.color} text-white rounded-2xl p-3 shadow-md active:scale-95 disabled:opacity-50`}>
                       <div className="text-xl mb-0.5">{s.emoji}</div>
-                      <div className="font-bold text-sm">전략 {k} +10</div>
+                      <div className="font-bold text-sm">전략 {k} +5</div>
                       <div className="text-xs opacity-90 mt-0.5">{s.name}</div>
                       <div className="text-[10px] opacity-70 mt-0.5">{s.desc}</div>
                     </button>
@@ -867,7 +867,7 @@ function App() {
                   <button onClick={() => handleGen10('MIX')} disabled={generating}
                     className="bg-gradient-to-br from-slate-700 to-slate-900 text-white rounded-2xl p-3 shadow-md active:scale-95 disabled:opacity-50 col-span-2">
                     <div className="text-xl mb-0.5">🎰</div>
-                    <div className="font-bold text-sm">MIX +10 (전체 균형)</div>
+                    <div className="font-bold text-sm">MIX +5 (전체 균형)</div>
                     <div className="text-xs opacity-90 mt-0.5">7전략 가중 분산</div>
                   </button>
                 </div>
