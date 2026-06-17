@@ -85,7 +85,7 @@ const Cpu = _ic([{t:'rect',x:4,y:4,width:16,height:16,rx:2},{t:'rect',x:9,y:9,wi
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 8;
+const APP_VERSION = 9;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -95,7 +95,7 @@ const STRAT_META = {
   W: { name: '이월수', emoji: '🔁', color: 'from-amber-600 to-orange-700', fixedMin: 1, fixedMax: 2 },
   V: { name: '최약끝수', emoji: '✨', color: 'from-purple-500 to-pink-600', fixedMin: 1, fixedMax: 2 },
   U: { name: '합계정밀', emoji: '🎲', color: 'from-cyan-500 to-blue-600', fixed: [], fixedMin: 0, fixedMax: 0, sumMin: 130, sumMax: 150 },
-  T: { name: '사주×통계', emoji: '🔮', color: 'from-rose-500 to-red-600', special: 'saju', sajuPool: [1, 3, 7, 8, 11, 13, 14, 22, 25, 28, 29, 32, 38, 41] }
+  T: { name: '분배회피', emoji: '🤫', color: 'from-rose-500 to-red-600', special: 'antipopular' }
 };
 
 const MIXED_WEIGHTS = { X: 2, Y: 2, Z: 1, W: 2, V: 1, U: 1, T: 1 };
@@ -214,7 +214,8 @@ function buildStrategies(eng) {
   s.V.fixed = eng.V_fixed;       s.V.desc = `끝수${eng.weakestDigit} 회귀 (${eng.V_fixed.join('·')})`;
   s.U.sumMin = eng.U_sumMin;     s.U.sumMax = eng.U_sumMax;
   s.U.desc = `합 ${eng.U_sumMin}~${eng.U_sumMax} (평균${eng.avgSum})`;
-  s.T.desc = '사주4+하위2(자동)';
+  s.T.desc = '당첨 시 적게 나누는 조합';
+  s.T.lastWin = eng.W_fixed;   // 직전 회차 본번호 (겹침 벌점용)
   return s;
 }
 
@@ -243,26 +244,80 @@ function isValid(nums, sumMin = 110, sumMax = 160) {
   return true;
 }
 
+// 🆕 대중성 점수: 높을수록 남들이 많이 골라 당첨 시 분배 인원↑ (나쁨)
+function popularityScore(arr, lastWin) {
+  const s = [...arr].sort((a, b) => a - b);
+  let p = 0;
+  const sum = s.reduce((a, b) => a + b, 0);
+  if (sum < 100) p += 5;
+  else if (sum <= 119) p += 2;
+  else if (sum <= 180) p += 0;        // 스위트존
+  else if (sum <= 200) p += 1;
+  else p += 3;
+  const highCnt = s.filter(n => n >= 32).length;     // 32+(생일대 밖) 최소 2개 유도
+  p += Math.max(0, 2 - highCnt) * 2;
+  let run = 1, maxRun = 1;                            // 가장 긴 연속런
+  for (let i = 1; i < s.length; i++) {
+    if (s[i] - s[i - 1] === 1) { run++; if (run > maxRun) maxRun = run; } else run = 1;
+  }
+  if (maxRun >= 3) p += 2;
+  const diffs = [];                                  // 등차수열
+  for (let i = 1; i < s.length; i++) diffs.push(s[i] - s[i - 1]);
+  if (diffs.every(d => d === diffs[0])) p += 5;       // 6개 등차
+  else {
+    let arith5 = false;                              // 5개(연속 4간격) 등차
+    for (let i = 0; i + 3 < diffs.length; i++) {
+      if (diffs[i] === diffs[i + 1] && diffs[i + 1] === diffs[i + 2] && diffs[i + 2] === diffs[i + 3]) { arith5 = true; break; }
+    }
+    if (arith5) p += 2;
+  }
+  const band = {};                                   // 십의자리 구간 4개+ 몰림
+  for (const n of s) { const b = Math.floor(n / 10); band[b] = (band[b] || 0) + 1; }
+  if (Object.values(band).some(c => c >= 4)) p += 2;
+  if (lastWin && lastWin.length) {                   // 직전 회차와 3개+ 겹침
+    if (s.filter(n => lastWin.includes(n)).length >= 3) p += 3;
+  }
+  const isSeq = s.every((n, i) => n === i + 1);       // 유명 패턴
+  const allMult5 = s.every(n => n % 5 === 0);
+  if (isSeq || allMult5) p += 10;
+  return p;
+}
+
+// 🆕 분배회피 한 줄: 유효 조합 1500개 → 점수 오름차순 → 하위 5%에서 무작위 추출
+function generateAntiPopularLine(cfg) {
+  const CAND = 1500;
+  const pool = [];
+  let attempts = 0;
+  while (pool.length < CAND && attempts < 40000) {
+    attempts++;
+    const set = new Set();
+    while (set.size < 6) set.add(Math.floor(Math.random() * 45) + 1);
+    const arr = [...set].sort((a, b) => a - b);
+    if (isValid(arr, 120, 175)) pool.push(arr);       // 분배 최소 구간(합 160~180) 확보 위해 범위 확장
+  }
+  if (pool.length === 0) return null;
+  const scored = pool.map(a => ({ a, sc: popularityScore(a, cfg.lastWin) }))
+                     .sort((x, y) => x.sc - y.sc);    // 덜 대중적(점수↓)이 앞으로
+  const cut = Math.max(1, Math.floor(scored.length * 0.05));
+  return scored[Math.floor(Math.random() * cut)].a;   // 하위 5%에서 랜덤 → 매번 살짝 다름
+}
+
 function generateLine(strategy, STRATEGIES, POOLS) {
   const cfg = STRATEGIES[strategy];
   const sumMin = cfg.sumMin || 110;
   const sumMax = cfg.sumMax || 160;
+
+  // 🆕 분배회피: 대중성 점수가 낮은(덜 대중적인) 조합 추천
+  if (cfg.special === 'antipopular') return generateAntiPopularLine(cfg);
+
   const FILL_POOL = [...new Set([...POOLS.미출현, ...POOLS.일회, ...POOLS.강세, ...POOLS.중간])];
   for (let attempt = 0; attempt < 300; attempt++) {
     const nums = new Set();
-    if (cfg.special === 'saju') {
-      const sajuShuf = [...cfg.sajuPool].sort(() => Math.random() - 0.5);
-      for (let i = 0; i < 4 && i < sajuShuf.length; i++) nums.add(sajuShuf[i]);
-      const lowPool = [...POOLS.하위, ...POOLS.미출현, ...POOLS.일회].filter(n => !nums.has(n));
-      const lowShuf = lowPool.sort(() => Math.random() - 0.5);
-      for (let i = 0; i < 2 && i < lowShuf.length; i++) nums.add(lowShuf[i]);
-    } else {
-      const fixedCount = Math.floor(Math.random() * (cfg.fixedMax - cfg.fixedMin + 1)) + cfg.fixedMin;
-      const shuf = [...(cfg.fixed || [])].sort(() => Math.random() - 0.5);
-      for (let i = 0; i < fixedCount && i < shuf.length; i++) nums.add(shuf[i]);
-      const fillShuf = FILL_POOL.filter(n => !nums.has(n)).sort(() => Math.random() - 0.5);
-      for (const n of fillShuf) { if (nums.size >= 6) break; nums.add(n); }
-    }
+    const fixedCount = Math.floor(Math.random() * (cfg.fixedMax - cfg.fixedMin + 1)) + cfg.fixedMin;
+    const shuf = [...(cfg.fixed || [])].sort(() => Math.random() - 0.5);
+    for (let i = 0; i < fixedCount && i < shuf.length; i++) nums.add(shuf[i]);
+    const fillShuf = FILL_POOL.filter(n => !nums.has(n)).sort(() => Math.random() - 0.5);
+    for (const n of fillShuf) { if (nums.size >= 6) break; nums.add(n); }
     if (nums.size < 6) {
       const all = Array.from({ length: 45 }, (_, i) => i + 1).filter(n => !nums.has(n));
       const allShuf = all.sort(() => Math.random() - 0.5);
@@ -792,7 +847,7 @@ function App() {
                 </div>
               </div>
               <div className={`text-[11px] ${textDim} mt-2 leading-relaxed`}>
-                💡 매칭 탭에서 추첨 결과를 저장하면 위 전략이 모두 <strong>자동 갱신</strong>됩니다. (T 사주풀만 개인값 고정)
+                💡 매칭 탭에서 추첨 결과를 저장하면 위 전략이 모두 <strong>자동 갱신</strong>됩니다.
               </div>
             </div>
 
