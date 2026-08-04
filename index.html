@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v6</title>
+  <title>로또 분석기 v11</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -85,7 +85,7 @@ const Cpu = _ic([{t:'rect',x:4,y:4,width:16,height:16,rx:2},{t:'rect',x:9,y:9,wi
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 10;
+const APP_VERSION = 11;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -97,6 +97,10 @@ const STRAT_META = {
   U: { name: '합계정밀', emoji: '🎲', color: 'from-cyan-500 to-blue-600', fixed: [], fixedMin: 0, fixedMax: 0, sumMin: 130, sumMax: 150 },
   T: { name: '분배회피', emoji: '🤫', color: 'from-rose-500 to-red-600', special: 'antipopular' }
 };
+
+// 🆕 생성 탭 버튼 표시 순서 (표시 전용 — 생성 로직/가중치와 무관)
+// 분배회피(T)는 당첨률은 같지만 당첨 시 분배 인원을 줄이는 실익이 있어 맨 위로.
+const DISPLAY_ORDER = ['T', 'X', 'Y', 'Z', 'W', 'V', 'U'];
 
 const MIXED_WEIGHTS = { X: 2, Y: 2, Z: 1, W: 2, V: 1, U: 1, T: 1 };
 const BACKTEST_DIST = { X: 5, Y: 5, Z: 4, W: 5, V: 4, U: 4, T: 3 };
@@ -302,6 +306,20 @@ function generateAntiPopularLine(cfg) {
   return scored[Math.floor(Math.random() * cut)].a;   // 하위 5%에서 랜덤 → 매번 살짝 다름
 }
 
+// 🆕 공정 셔플 (Fisher-Yates)
+// ⚠️ 예전 코드의 `.sort(() => Math.random() - 0.5)` 는 공정한 셔플이 아니다.
+//    JS 엔진 정렬 특성상 원래 앞자리에 있던 원소가 계속 앞에 남아,
+//    FILL_POOL 첫 번호가 마지막 번호보다 2.5배 자주 뽑히는 편향이 있었다.
+//    (실측: 5번 11% → 24%) 아래 방식은 모든 순열이 정확히 같은 확률로 나온다.
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function generateLine(strategy, STRATEGIES, POOLS) {
   const cfg = STRATEGIES[strategy];
   const sumMin = cfg.sumMin || 110;
@@ -314,13 +332,13 @@ function generateLine(strategy, STRATEGIES, POOLS) {
   for (let attempt = 0; attempt < 300; attempt++) {
     const nums = new Set();
     const fixedCount = Math.floor(Math.random() * (cfg.fixedMax - cfg.fixedMin + 1)) + cfg.fixedMin;
-    const shuf = [...(cfg.fixed || [])].sort(() => Math.random() - 0.5);
+    const shuf = shuffle(cfg.fixed || []);
     for (let i = 0; i < fixedCount && i < shuf.length; i++) nums.add(shuf[i]);
-    const fillShuf = FILL_POOL.filter(n => !nums.has(n)).sort(() => Math.random() - 0.5);
+    const fillShuf = shuffle(FILL_POOL.filter(n => !nums.has(n)));
     for (const n of fillShuf) { if (nums.size >= 6) break; nums.add(n); }
     if (nums.size < 6) {
       const all = Array.from({ length: 45 }, (_, i) => i + 1).filter(n => !nums.has(n));
-      const allShuf = all.sort(() => Math.random() - 0.5);
+      const allShuf = shuffle(all);
       for (const n of allShuf) { if (nums.size >= 6) break; nums.add(n); }
     }
     const arr = [...nums].sort((a, b) => a - b);
@@ -767,7 +785,7 @@ function App() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold flex items-center gap-2">
-              <Sparkles className="w-5 h-5" /> 로또 분석기 <span className="text-xs font-normal opacity-75">v7</span>
+              <Sparkles className="w-5 h-5" /> 로또 분석기 <span className="text-xs font-normal opacity-75">v{APP_VERSION}</span>
             </h1>
             <p className="text-emerald-100 text-xs mt-0.5">자동 전략 엔진 · 매주 자동 갱신</p>
           </div>
@@ -855,15 +873,21 @@ function App() {
               <>
                 <div className={`text-xs ${textDim} font-semibold mb-1`}>전략 선택 (5줄씩 추가)</div>
                 <div className="grid grid-cols-2 gap-2.5">
-                  {Object.entries(STRATEGIES).map(([k, s]) => (
+                  {DISPLAY_ORDER.filter(k => STRATEGIES[k]).map(k => {
+                    const s = STRATEGIES[k];
+                    return (
                     <button key={k} onClick={() => handleGen10(k)} disabled={generating}
-                      className={`bg-gradient-to-br ${s.color} text-white rounded-2xl p-3 shadow-md active:scale-95 disabled:opacity-50`}>
+                      className={`relative bg-gradient-to-br ${s.color} text-white rounded-2xl p-3 shadow-md active:scale-95 disabled:opacity-50`}>
+                      {k === 'T' && (
+                        <span className="absolute top-1.5 right-1.5 bg-white/95 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow">💰 추천</span>
+                      )}
                       <div className="text-xl mb-0.5">{s.emoji}</div>
                       <div className="font-bold text-sm">전략 {k} +5</div>
                       <div className="text-xs opacity-90 mt-0.5">{s.name}</div>
                       <div className="text-[10px] opacity-70 mt-0.5">{s.desc}</div>
                     </button>
-                  ))}
+                    );
+                  })}
                   <button onClick={() => handleGen10('MIX')} disabled={generating}
                     className="bg-gradient-to-br from-slate-700 to-slate-900 text-white rounded-2xl p-3 shadow-md active:scale-95 disabled:opacity-50 col-span-2">
                     <div className="text-xl mb-0.5">🎰</div>
@@ -1261,10 +1285,21 @@ function App() {
                 평소엔 새 버전이 나오면 상단에 자동으로 알림이 뜹니다. 화면이 옛날 그대로면 이 버튼을 누르세요. (저장 데이터는 유지됩니다)
               </p>
             </div>
+            <div className={`${card} rounded-2xl shadow-md p-4`}>
+              <div className="font-bold mb-2 flex items-center gap-2">ℹ️ 전략 안내</div>
+              <p className={`text-xs ${textDim} leading-relaxed`}>
+                7가지 전략은 번호 관리와 재미를 위한 것으로, <span className="font-semibold">당첨 확률을 높이지 않습니다</span>
+                {' '}(1,215회 백테스트 검증 완료).
+              </p>
+              <p className={`text-xs ${textDim} leading-relaxed mt-2`}>
+                단, <span className="font-semibold text-rose-500">🤫 분배회피</span>는 당첨 시 나눠 갖는 인원을 줄여
+                {' '}<span className="font-semibold">실수령액을 키우는 효과</span>가 있습니다.
+              </p>
+            </div>
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
               <div className="font-bold mb-1 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> 안내</div>
               <p className="leading-relaxed">로또는 무작위 추첨, 어떤 분석도 당첨 보장 안 됨. 통계 참고용 (1336 도박상담).</p>
-              <p className="mt-2 font-semibold">v6.0 · 2026.5.17 · V·U 끝수·합계 자동화</p>
+              <p className="mt-2 font-semibold">v11 · 2026.8.4 · 공정 셔플 적용, 전략 안내 추가</p>
             </div>
           </div>
         )}
