@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v13</title>
+  <title>로또 분석기 v14</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -54,6 +54,111 @@ if (typeof window.storage === 'undefined') {
   };
 }
 
+// ===== ☁️ Supabase 클라우드 동기화 =====
+// URL·anon key 는 설정 탭에서 입력해도 되고, 아래 상수에 박아 넣어도 됩니다.
+// RLS 가 'x-owner-key' 헤더(= 내 동기화 키)를 검사하므로 anon key 는 공개돼도 안전합니다.
+const SB_URL_CONST = '';
+const SB_KEY_CONST = '';
+const SB_TABLE = 'lotto_records';
+
+const sbGet = (k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+const sbSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+
+function sbConf() {
+  const url = (SB_URL_CONST || sbGet('sb:url')).replace(/\/+$/, '');
+  const key = SB_KEY_CONST || sbGet('sb:key');
+  const owner = sbGet('sb:owner');
+  return { url, key, owner, on: !!(url && key && owner) };
+}
+
+// 내 동기화 키 — 기기마다 하나. 다른 기기엔 이 값을 그대로 붙여넣으면 같은 데이터를 봅니다.
+function sbEnsureOwner() {
+  let o = sbGet('sb:owner');
+  if (!o) {
+    const b = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(b);
+    o = 'lotto_' + Array.from(b).map(x => x.toString(16).padStart(2, '0')).join('');
+    sbSet('sb:owner', o);
+  }
+  return o;
+}
+
+function sbHeaders(c) {
+  return {
+    'apikey': c.key,
+    'Authorization': `Bearer ${c.key}`,
+    'x-owner-key': c.owner,
+    'Content-Type': 'application/json'
+  };
+}
+
+// 로컬 회차 레코드 → 테이블 행
+function sbRow(rec, owner) {
+  return {
+    owner, round: rec.round, date: rec.date || null,
+    games: rec.games || [], win_numbers: rec.winNumbers || null,
+    bonus: (rec.bonus === 0 || rec.bonus) ? rec.bonus : null,
+    matches: rec.matches || null,
+    extra: { backtest: !!rec.backtest, recordOnly: !!rec.recordOnly, updatedAt: rec.updatedAt || null }
+  };
+}
+
+// 테이블 행 → 로컬 회차 레코드
+function sbToRec(row) {
+  const ex = row.extra || {};
+  const rec = {
+    round: row.round, date: row.date || '', games: row.games || [],
+    winNumbers: row.win_numbers || null, bonus: row.bonus,
+    matches: row.matches || null,
+    updatedAt: ex.updatedAt || row.updated_at || null
+  };
+  if (ex.backtest) rec.backtest = true;
+  if (ex.recordOnly) rec.recordOnly = true;
+  return rec;
+}
+
+async function sbUpsert(recs) {
+  const c = sbConf();
+  if (!c.on) throw new Error('동기화 미설정');
+  const body = JSON.stringify(recs.map(r => sbRow(r, c.owner)));
+  const res = await fetch(`${c.url}/rest/v1/${SB_TABLE}?on_conflict=owner,round`, {
+    method: 'POST',
+    headers: Object.assign({}, sbHeaders(c), { 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+    body
+  });
+  if (!res.ok) throw new Error(`업로드 실패 ${res.status} ${(await res.text()).slice(0, 120)}`);
+  return true;
+}
+
+async function sbDeleteRound(round) {
+  const c = sbConf();
+  if (!c.on) return;
+  try {
+    await fetch(`${c.url}/rest/v1/${SB_TABLE}?owner=eq.${encodeURIComponent(c.owner)}&round=eq.${round}`,
+      { method: 'DELETE', headers: sbHeaders(c) });
+  } catch (e) { /* 오프라인이면 조용히 넘어간다 */ }
+}
+
+async function sbFetchAll() {
+  const c = sbConf();
+  if (!c.on) throw new Error('동기화 미설정');
+  const res = await fetch(`${c.url}/rest/v1/${SB_TABLE}?select=*&order=round.desc`, { headers: sbHeaders(c) });
+  if (!res.ok) throw new Error(`내려받기 실패 ${res.status} ${(await res.text()).slice(0, 120)}`);
+  return (await res.json()).map(sbToRec);
+}
+
+// 오프라인 대기열 (회차 번호 목록)
+function sbQueue() { try { return JSON.parse(sbGet('sb:queue') || '[]'); } catch (e) { return []; } }
+function sbQueueAdd(round) {
+  const q = sbQueue();
+  if (q.indexOf(round) < 0) { q.push(round); sbSet('sb:queue', JSON.stringify(q)); }
+}
+function sbQueueDel(rounds) {
+  const del = {};
+  rounds.forEach(r => { del[r] = true; });
+  sbSet('sb:queue', JSON.stringify(sbQueue().filter(r => !del[r])));
+}
+
 // ===== 아이콘 (lucide 대체용 인라인 SVG) =====
 const _ic = (path, extra) => (props) => React.createElement('svg', {
   xmlns:'http://www.w3.org/2000/svg', width:24, height:24, viewBox:'0 0 24 24',
@@ -85,7 +190,7 @@ const Cpu = _ic([{t:'rect',x:4,y:4,width:16,height:16,rx:2},{t:'rect',x:9,y:9,wi
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 13;
+const APP_VERSION = 14;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -694,6 +799,330 @@ function GameRow({ g, dark, textDim, win, bonus, prize }) {
   );
 }
 
+// ===== 📊 공통 계산 · freqTable(회차) =====
+// 그 회차에 저장된 줄 전체에서 번호별 등장 횟수를 세고 공동순위(1·2·2·4 방식) 순위표를 만든다.
+// 화면1(추첨 전)·화면2(매칭 후)·화면3(역대 프로필)이 전부 이 함수 하나만 쓴다. 서버 불필요.
+function freqTable(rec) {
+  const games = (rec && Array.isArray(rec.games)) ? rec.games : [];
+  const count = {}, byStrat = {};
+  for (let n = 1; n <= 45; n++) { count[n] = 0; byStrat[n] = {}; }
+  for (const g of games) {
+    if (!g || !Array.isArray(g.numbers)) continue;
+    for (const n of g.numbers) {
+      if (!(n >= 1 && n <= 45)) continue;
+      count[n]++;
+      byStrat[n][g.strategy] = (byStrat[n][g.strategy] || 0) + 1;
+    }
+  }
+  const rows = [];
+  for (let n = 1; n <= 45; n++) rows.push({ n, count: count[n], strats: byStrat[n] });
+  // 횟수 내림차순 → 번호 오름차순. 같은 횟수는 같은 순위(공동순위)
+  rows.sort((a, b) => b.count - a.count || a.n - b.n);
+  rows.forEach((row, i) => {
+    row.rank = (i > 0 && rows[i - 1].count === row.count) ? rows[i - 1].rank : i + 1;
+    // 어느 전략이 이 번호를 넣었는지 (많이 넣은 전략 순)
+    row.stratList = Object.keys(row.strats)
+      .map(k => [k, row.strats[k]])
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  });
+  const byNum = {};
+  for (const row of rows) byNum[row.n] = row;
+  return {
+    rows, byNum,
+    lines: games.length,
+    top7: rows.slice(0, 7).map(x => x.n),           // 표시상의 상위 7칸 (동률이어도 7개로 자름)
+    missing: rows.filter(x => x.count === 0).map(x => x.n).sort((a, b) => a - b)
+  };
+}
+
+// 당첨번호가 "내 빈도 순위표"에서 몇 위였는지 (화면2·화면3 공용). 매칭 전이면 null
+function winProfile(rec, ft) {
+  if (!rec || !Array.isArray(rec.winNumbers) || rec.winNumbers.length !== 6) return null;
+  if (!ft || ft.lines === 0) return null;
+  const top7 = ft.top7;
+  const mk = (n) => {
+    const row = ft.byNum[n];
+    if (!row) return null;
+    return { n, rank: row.rank, count: row.count, top7: top7.indexOf(n) >= 0, missing: row.count === 0 };
+  };
+  const win = [...rec.winNumbers].sort((a, b) => a - b).map(mk).filter(Boolean);
+  if (win.length !== 6) return null;
+  const bonus = (rec.bonus >= 1 && rec.bonus <= 45) ? mk(rec.bonus) : null;
+  return {
+    win, bonus,
+    ranksAsc: win.map(w => w.rank).sort((a, b) => a - b),
+    avgRank: win.reduce((s, w) => s + w.rank, 0) / 6,
+    top7Hits: win.filter(w => w.top7).length,
+    missing: win.filter(w => w.missing).map(w => w.n)
+  };
+}
+
+// TOP7 7칸이 우연히 당첨번호와 겹칠 기대 개수 = 7 × 6/45
+const TOP7_EXPECT = 7 * 6 / 45;
+
+// 9전략에 속하지 않는 보조 줄 (통계의 전략별 ROI 집계에는 넣지 않는다)
+const EXTRA_STRAT = { F: { name: '커버보완', emoji: '➕' } };
+const stratMeta = (k) => STRAT_META[k] || EXTRA_STRAT[k] || {};
+
+// ➕ 커버 보완: 아직 한 번도 안 쓴 번호를 우선 담아 줄을 만든다 (무작위 없음 · 언제 눌러도 같은 결과)
+// 남은 자리는 "가장 적게 실은 번호"로 채우되, 참고 배지(lineChecks)를 가장 많이 통과하는 조합을 고른다.
+function buildCoverLines(ft, maxLines) {
+  const missing = ft.missing.slice();
+  if (missing.length === 0 || maxLines <= 0) return [];
+  const filler = ft.rows.filter(x => x.count > 0).slice().reverse().map(x => x.n); // 적게 실은 번호부터
+  const need = Math.min(maxLines, Math.ceil(missing.length / 6));
+  const lines = [];
+  const usedFill = {};
+  for (let i = 0; i < need; i++) {
+    const base = missing.slice(i * 6, i * 6 + 6);
+    if (base.length === 0) break;
+    const want = 6 - base.length;
+    let best = null;
+    if (want === 0) {
+      best = { nums: base.slice().sort((a, b) => a - b), fill: [], passed: lineChecks(base).passed };
+    } else {
+      for (let off = 0; off + want <= filler.length; off++) {
+        const fill = [];
+        for (let j = off; j < filler.length && fill.length < want; j++) {
+          const n = filler[j];
+          if (base.indexOf(n) >= 0 || usedFill[n]) continue;
+          fill.push(n);
+        }
+        if (fill.length < want) break;
+        const nums = base.concat(fill).sort((a, b) => a - b);
+        const passed = lineChecks(nums).passed;
+        if (!best || passed > best.passed) best = { nums, fill, passed };
+        if (passed === 4) break;
+      }
+    }
+    if (!best) break;
+    best.fill.forEach(n => { usedFill[n] = true; });
+    lines.push({
+      strategy: 'F',
+      numbers: best.nums,
+      reason: `커버 보완 · 미포함 ${base.join('·')}번 우선 + 가장 적게 실은 번호로 채움 (참고 배지 ${best.passed}/4 통과)`
+    });
+  }
+  return lines;
+}
+
+function StratChips({ list, dark }) {
+  return (
+    <div className="flex flex-wrap gap-1 mt-0.5">
+      {list.map(([k, c]) => (
+        <span key={k} className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${dark ? 'bg-slate-600 text-slate-200' : 'bg-slate-200 text-slate-700'}`}>
+          {stratMeta(k).emoji || ''}{k}·{c}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ===== 📊 [C] 분석 리더보드 — 12개 축 =====
+// 9전략(v13 선호순위) + 내 빈도순위 + 핫넘버 + 콜드넘버.
+// ⚠️ 각 회차는 "그 회차 직전 데이터"만으로 순위를 만든다 (미래 정보 차단).
+const LB_VERSION = 1;   // 축 계산 로직이 바뀌면 올린다 → 캐시 자동 무효화
+const LB_RECENT = 10;   // 최근 몇 회를 볼지
+const RANDOM_EXPECT_RANK = 23;   // 1~45 무작위 기대 순위 = (1+45)/2
+
+const AXES = [
+  { k: 'MY', label: '내 빈도', emoji: '📊' },
+  { k: 'HOT', label: '핫넘버', emoji: '🔥' },
+  { k: 'COLD', label: '콜드넘버', emoji: '🧊' }
+].concat(DISPLAY_ORDER.map(k => ({ k, label: STRAT_META[k].name, emoji: STRAT_META[k].emoji })));
+
+// 공동순위 순위표 만들기 (keyFn 은 번호를 뺀 정렬키 배열을 돌려준다)
+function rankByKey(keyFn) {
+  const rows = [];
+  for (let n = 1; n <= 45; n++) rows.push({ n, key: keyFn(n) });
+  rows.sort((a, b) => cmpKey(a.key.concat([a.n]), b.key.concat([b.n])));
+  const m = {};
+  rows.forEach((r, i) => {
+    m[r.n] = (i > 0 && cmpKey(rows[i - 1].key, r.key) === 0) ? m[rows[i - 1].n] : i + 1;
+  });
+  return m;
+}
+
+// 한 회차 = 12축 × (당첨 6개 + 보너스) 순위
+function buildLeaderRow(rec, priorHist) {
+  const eng = computeEngine(priorHist);
+  const S = buildStrategies(eng);
+  const built = buildRankings(eng, S);
+  const axes = {};
+  for (const k of Object.keys(built.ranks)) {
+    const m = {};
+    built.ranks[k].forEach(r => { m[r.n] = r.rank; });
+    axes[k] = m;
+  }
+  axes.HOT = rankByKey(n => [-eng.freq[n]]);                              // 많이 나온 순
+  axes.COLD = rankByKey(n => [-Math.min(eng.lastSeen[n], eng.rounds)]);   // 오래 안 나온 순
+  const ft = freqTable(rec);
+  if (ft.lines > 0) {
+    const m = {};
+    ft.rows.forEach(r => { m[r.n] = r.rank; });
+    axes.MY = m;
+  } else axes.MY = null;
+
+  const nums = [...rec.winNumbers].sort((a, b) => a - b);
+  const all = nums.concat([rec.bonus]);
+  const cells = {};
+  for (const a of AXES) {
+    const m = axes[a.k];
+    cells[a.k] = m ? all.map(n => m[n] || null) : null;
+  }
+  return { round: rec.round, nums, bonus: rec.bonus, base: eng.baseRange, lines: ft.lines, cells };
+}
+
+// 순위 → 색 (상위=파랑 / 하위=빨강)
+function rankColor(rank, dark) {
+  if (!rank) return {};
+  const t = Math.min(1, Math.max(0, (rank - 1) / 44));
+  const hue = 220 - 220 * t;
+  return dark
+    ? { backgroundColor: `hsl(${hue}, 50%, 27%)`, color: '#e2e8f0' }
+    : { backgroundColor: `hsl(${hue}, 85%, 92%)`, color: `hsl(${hue}, 75%, 28%)` };
+}
+
+// ===== 📊 빈도 분석 패널 (저장 탭 회차 카드 안) =====
+// 화면1: 추첨 전 — 많이 겹친 순서 · 미포함 번호 / 화면2: 매칭 후 자동 확장 — 당첨번호의 내 빈도 순위
+function FreqPanel({ r, dark, textDim }) {
+  const ft = useMemo(() => freqTable(r), [r]);
+  const prof = useMemo(() => winProfile(r, ft), [r, ft]);
+  const matched = !!r.matches;
+  const [open, setOpen] = useState(matched);
+  const [more, setMore] = useState(false);
+  useEffect(() => { if (matched) setOpen(true); }, [matched]);
+
+  const used = ft.rows.filter(x => x.count > 0);
+  const big = used.filter(x => x.count >= 5);
+  const head = big.length > 0 ? big : used.slice(0, 7);   // 5회 이상이 없으면 상위 7개만 크게
+  const rest = used.filter(x => head.indexOf(x) < 0);
+  const line = dark ? 'border-slate-700' : 'border-slate-200';
+  const soft = dark ? 'bg-slate-700/40' : 'bg-slate-50';
+
+  return (
+    <div className={`px-3 pb-3 pt-2 border-t ${line}`}>
+      <button onClick={() => setOpen(!open)}
+        className={`w-full py-2 rounded-xl text-xs font-bold active:scale-95 flex items-center justify-center gap-1.5 ${dark ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-700'}`}>
+        📊 빈도 분석 <span className={`font-normal ${textDim}`}>({ft.lines}줄 · 사용 {used.length}/45)</span> {open ? '▲' : '▼'}
+      </button>
+
+      {open && (
+        <div className="mt-2.5">
+          {/* ── 화면1: 많이 겹친 순서 ── */}
+          <div className={`text-[11px] ${textDim} mb-1.5`}>
+            {big.length > 0
+              ? <>5회 이상 겹친 번호 <strong>{big.length}개</strong> — 많이 겹친 순</>
+              : <>5회 이상 겹친 번호가 없어 상위 {head.length}개만 표시</>}
+          </div>
+          <div className="space-y-1">
+            {head.map(x => (
+              <div key={x.n} className={`flex items-center gap-2 py-1.5 px-2 rounded-lg ${soft}`}>
+                <span className={`w-9 text-xs font-bold text-right shrink-0 ${x.rank <= 7 ? 'text-emerald-500' : textDim}`}>{x.rank}위</span>
+                <Ball n={x.n} />
+                <span className="text-sm font-bold w-10 shrink-0">{x.count}회</span>
+                <div className="flex-1 min-w-0">
+                  <div className={`h-1.5 rounded-full overflow-hidden ${dark ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                    <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500"
+                      style={{ width: `${used.length ? (x.count / used[0].count) * 100 : 0}%` }} />
+                  </div>
+                  <StratChips list={x.stratList} dark={dark} />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {rest.length > 0 && (
+            <>
+              <button onClick={() => setMore(!more)}
+                className={`w-full mt-2 py-1.5 rounded-xl text-[11px] font-semibold active:scale-95 ${dark ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+                {more ? '접기 ▲' : `나머지 ${rest.length}개 더보기 ▼`}
+              </button>
+              {more && (
+                <div className="grid grid-cols-5 gap-1.5 mt-2">
+                  {rest.map(x => (
+                    <div key={x.n} className={`rounded-lg py-1.5 text-center ${soft}`}>
+                      <div className={`text-[9px] ${textDim}`}>{x.rank}위</div>
+                      <div className="flex justify-center my-0.5"><Ball n={x.n} sm /></div>
+                      <div className="text-[10px] font-semibold">{x.count}회</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          <div className={`text-[11px] mt-2 leading-relaxed rounded-xl px-3 py-2 ${ft.missing.length > 0
+            ? (dark ? 'bg-slate-700/50 text-slate-300' : 'bg-slate-100 text-slate-600')
+            : (dark ? 'bg-emerald-900/30 text-emerald-200' : 'bg-emerald-50 text-emerald-700')}`}>
+            {ft.missing.length > 0
+              ? <>미포함: <strong>{ft.missing.join('·')}번</strong> ({ft.missing.length}개) — 이 번호가 나오면 그 자리는 못 맞춥니다</>
+              : <>미포함 없음 — 1~45번을 모두 실었습니다</>}
+          </div>
+
+          {/* ── 화면2: 매칭 후 (자동 확장) ── */}
+          {prof && (
+            <div className={`mt-3 pt-3 border-t ${line}`}>
+              <div className="text-xs font-bold mb-2">🎯 당첨번호가 내 빈도 몇 위였나</div>
+
+              {prof.missing.length > 0 && (
+                <div className={`text-[11px] leading-relaxed rounded-xl px-3 py-2 mb-2 ${dark ? 'bg-red-900/30 text-red-200 border border-red-800' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+                  ⚠️ 당첨번호 중 <strong>{prof.missing.join('·')}번</strong>이 이 회차 {ft.lines}줄 어디에도 없었습니다.
+                  <div className="mt-1">이 번호가 빠진 이상 <strong>{r.round}회차는 1등이 원천 불가능</strong>했습니다.</div>
+                </div>
+              )}
+
+              <div className="space-y-1">
+                {prof.win.map(w => (
+                  <div key={w.n} className={`flex items-center gap-2 py-1 px-2 rounded-lg ${w.top7 ? (dark ? 'bg-emerald-900/30' : 'bg-emerald-50') : w.missing ? (dark ? 'bg-red-900/20' : 'bg-red-50') : ''}`}>
+                    <Ball n={w.n} sm />
+                    <span className="text-xs">→ 내 빈도 <strong className="text-sm">{w.rank}위</strong></span>
+                    <span className={`text-[10px] ${textDim}`}>({w.count}회)</span>
+                    <span className="ml-auto shrink-0">
+                      {w.top7 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500 text-white">★적중</span>}
+                      {w.missing && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-500 text-white">⚠️미보유</span>}
+                    </span>
+                  </div>
+                ))}
+                {prof.bonus && (
+                  <div className={`flex items-center gap-2 py-1 px-2 rounded-lg border-t ${line}`}>
+                    <Ball n={prof.bonus.n} sm bonus />
+                    <span className={`text-[10px] ${textDim} shrink-0`}>보너스</span>
+                    <span className="text-xs">→ 내 빈도 <strong className="text-sm">{prof.bonus.rank}위</strong></span>
+                    <span className={`text-[10px] ${textDim}`}>({prof.bonus.count}회)</span>
+                    <span className="ml-auto shrink-0">
+                      {prof.bonus.top7 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500 text-white">★적중</span>}
+                      {prof.bonus.missing && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-500 text-white">⚠️미보유</span>}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 mt-2.5">
+                <div className={`rounded-xl py-2 text-center ${soft}`}>
+                  <div className={`text-[10px] ${textDim}`}>평균 빈도순위</div>
+                  <div className="text-lg font-bold">{prof.avgRank.toFixed(1)}위</div>
+                </div>
+                <div className={`rounded-xl py-2 text-center ${soft}`}>
+                  <div className={`text-[10px] ${textDim}`}>빈도 TOP7 적중</div>
+                  <div className="text-lg font-bold text-emerald-500">{prof.top7Hits}<span className={`text-xs font-normal ${textDim}`}>/7</span></div>
+                </div>
+                <div className={`rounded-xl py-2 text-center ${soft}`}>
+                  <div className={`text-[10px] ${textDim}`}>미보유 당첨번호</div>
+                  <div className={`text-lg font-bold ${prof.missing.length > 0 ? 'text-red-500' : ''}`}>{prof.missing.length}<span className={`text-xs font-normal ${textDim}`}>/6</span></div>
+                </div>
+              </div>
+              <div className={`text-[10px] ${textDim} mt-1.5 leading-relaxed`}>
+                ★적중 = 내 빈도 TOP7 안에 들어 있던 당첨번호 · 우연히 겹칠 기대치는 회차당 {TOP7_EXPECT.toFixed(2)}개
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const MAX_LINES = 50;
 const BATCH_SIZE = 5;
 
@@ -730,6 +1159,16 @@ function App() {
   // 🆕 통계 탭 · 전략별 선호 순위
   const [prefStrat, setPrefStrat] = useState('X');
   const [prefExpand, setPrefExpand] = useState(false);
+  // 🆕 [C] 분석 리더보드
+  const [lbRows, setLbRows] = useState([]);
+  const [lbLoading, setLbLoading] = useState(false);
+  const [lbAll, setLbAll] = useState(false);
+  // 🆕 [B] 클라우드 동기화
+  const [sync, setSync] = useState({ on: false, hasConf: false, busy: false, pending: 0, last: null, err: null });
+  const [sbUrlInput, setSbUrlInput] = useState('');
+  const [sbKeyInput, setSbKeyInput] = useState('');
+  const [sbOwnerInput, setSbOwnerInput] = useState('');
+  const syncing = useRef(false);
   const fileInputRef = useRef(null);
 
   // 🤖 저장된 당첨번호 기록에서 7전략 자동 계산 (saved 변경 시 자동 갱신)
@@ -763,7 +1202,93 @@ function App() {
     return { rows, noFixed: !ranked.some(r => r.fixed) };
   }, [tab, prefStrat, RANKS, ANTI]);
 
+  // 🆕 화면3 · 역대 순위 프로필 — 매칭 완료된 모든 회차를 freqTable 하나로 요약
+  const rankProfile = useMemo(() => {
+    if (tab !== 'stats') return null;
+    const rows = [];
+    for (const r of saved) {
+      if (!r.matches || !r.games || r.games.length === 0) continue;
+      const ft = freqTable(r);
+      const p = winProfile(r, ft);
+      if (p) rows.push(Object.assign({ round: r.round, lines: ft.lines }, p));
+    }
+    if (rows.length === 0) return null;
+    return {
+      rows,
+      avgOfAvg: rows.reduce((s, x) => s + x.avgRank, 0) / rows.length,
+      top7Total: rows.reduce((s, x) => s + x.top7Hits, 0),
+      top7Expect: rows.length * TOP7_EXPECT,
+      missTotal: rows.reduce((s, x) => s + x.missing.length, 0),
+      deadRounds: rows.filter(x => x.missing.length > 0).length
+    };
+  }, [tab, saved]);
+
+  // 🆕 [C] 리더보드 계산 — 무거우므로 회차별로 1회만 계산하고 localStorage 에 저장해 재사용
+  useEffect(() => {
+    if (tab !== 'stats') return;
+    let cancelled = false;
+    (async () => {
+      const hist = saved
+        .filter(r => Array.isArray(r.winNumbers) && r.winNumbers.length === 6)
+        .map(r => ({ round: r.round, nums: r.winNumbers, bonus: r.bonus }));
+      const targets = saved
+        .filter(r => Array.isArray(r.winNumbers) && r.winNumbers.length === 6)
+        .sort((a, b) => b.round - a.round).slice(0, LB_RECENT);
+      if (targets.length === 0) { setLbRows([]); return; }
+      setLbLoading(true);
+      const rows = [];
+      for (const rec of targets) {
+        if (cancelled) return;
+        const prior = hist.filter(h => h.round < rec.round);
+        // 직전 데이터가 5회 미만이면 엔진이 시드값으로 보완 → 미래 정보가 섞이므로 제외
+        if (prior.length < 5) continue;
+        const sig = `${LB_VERSION}|${prior.length}|${Math.max(...prior.map(p => p.round))}|${(rec.games || []).length}`;
+        let row = null;
+        try {
+          const c = await window.storage.get(`lb:${rec.round}`);
+          if (c && c.value) { const p = JSON.parse(c.value); if (p.sig === sig) row = p.row; }
+        } catch (e) {}
+        if (!row) {
+          row = buildLeaderRow(rec, prior);
+          try { await window.storage.set(`lb:${rec.round}`, JSON.stringify({ sig, row })); } catch (e) {}
+          await new Promise(rs => setTimeout(rs, 0));   // 화면 멈춤 방지
+        }
+        rows.push(row);
+      }
+      if (!cancelled) { setLbRows(rows); setLbLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, saved]);
+
+  // 축별 "당첨번호 평균 순위" (본번호 6개 기준 · 낮을수록 그 축이 당첨번호를 위로 올렸다는 뜻)
+  const lbBoard = useMemo(() => {
+    if (lbRows.length === 0) return null;
+    return AXES.map(a => {
+      let sum = 0, cnt = 0;
+      for (const row of lbRows) {
+        const c = row.cells[a.k];
+        if (!c) continue;
+        for (let i = 0; i < 6; i++) if (c[i]) { sum += c[i]; cnt++; }
+      }
+      return Object.assign({}, a, { avg: cnt ? sum / cnt : null, cnt });
+    }).filter(x => x.avg !== null).sort((x, y) => x.avg - y.avg);
+  }, [lbRows]);
+
   useEffect(() => { loadAll(); }, []);
+
+  // 🆕 [B] 앱 시작 시: 연결 정보 로드 → 클라우드 병합 → 밀린 업로드 재시도
+  useEffect(() => {
+    setSbUrlInput(SB_URL_CONST || sbGet('sb:url'));
+    setSbKeyInput(SB_KEY_CONST || sbGet('sb:key'));
+    setSbOwnerInput(sbGet('sb:owner'));
+    refreshSync();
+    if (sbConf().on) {
+      (async () => { await syncPull(true); await syncFlush(true); })();
+    }
+    const onOnline = () => { if (sbConf().on) syncFlush(true); };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, []);
 
   // 🆕 새 버전 확인: version.json을 캐시 무시하고 읽어 현재 버전과 비교
   useEffect(() => {
@@ -822,6 +1347,119 @@ function App() {
 
   function showToast(msg) { setToast(msg); }
 
+  // ===== ☁️ 동기화 =====
+  function refreshSync(patch) {
+    const c = sbConf();
+    setSync(s => Object.assign({}, s, {
+      on: c.on, hasConf: !!(c.url && c.key), pending: sbQueue().length, last: sbGet('sb:last')
+    }, patch || {}));
+  }
+
+  // 로컬 저장 + 클라우드 upsert (오프라인이면 대기열에 남겨 다음에 재시도)
+  async function saveRound(data, opts) {
+    data.updatedAt = new Date().toISOString();
+    await window.storage.set(`round:${data.round}`, JSON.stringify(data));
+    if (sbConf().on) {
+      sbQueueAdd(data.round);
+      if (!(opts && opts.defer)) syncFlush();
+      else refreshSync();
+    }
+    return data;
+  }
+
+  // 대기열 밀어넣기
+  async function syncFlush(silent) {
+    const c = sbConf();
+    if (!c.on || syncing.current) return;
+    const q = sbQueue();
+    if (q.length === 0) { refreshSync(); return; }
+    syncing.current = true;
+    refreshSync({ busy: true, err: null });
+    try {
+      const recs = [];
+      for (const rd of q) {
+        try {
+          const v = await window.storage.get(`round:${rd}`);
+          if (v && v.value) recs.push(JSON.parse(v.value));
+        } catch (e) {}
+      }
+      if (recs.length > 0) await sbUpsert(recs);
+      sbQueueDel(q);
+      sbSet('sb:last', new Date().toISOString());
+      refreshSync({ busy: false, err: null });
+      if (!silent) showToast(`☁️ ${recs.length}개 회차 업로드 완료`);
+    } catch (e) {
+      refreshSync({ busy: false, err: e.message });   // 대기열 유지 → 다음 접속 때 재시도
+      if (!silent) showToast('☁️ 업로드 실패 — 다음 접속 때 재시도합니다');
+    }
+    syncing.current = false;
+  }
+
+  // 클라우드가 더 최신이면 내려받아 병합
+  async function syncPull(silent) {
+    const c = sbConf();
+    if (!c.on) return 0;
+    refreshSync({ busy: true, err: null });
+    try {
+      const cloud = await sbFetchAll();
+      let merged = 0;
+      for (const cr of cloud) {
+        let local = null;
+        try {
+          const v = await window.storage.get(`round:${cr.round}`);
+          if (v && v.value) local = JSON.parse(v.value);
+        } catch (e) {}
+        const lt = local && local.updatedAt ? Date.parse(local.updatedAt) : 0;
+        const ct = cr.updatedAt ? Date.parse(cr.updatedAt) : 0;
+        if (!local || ct > lt) {
+          await window.storage.set(`round:${cr.round}`, JSON.stringify(cr));
+          merged++;
+        } else if (lt > ct) {
+          sbQueueAdd(cr.round);   // 로컬이 더 최신 → 되올림
+        }
+      }
+      sbSet('sb:last', new Date().toISOString());
+      refreshSync({ busy: false, err: null });
+      if (merged > 0) { await loadAll(); if (!silent) showToast(`☁️ ${merged}개 회차 내려받음`); }
+      else if (!silent) showToast('☁️ 최신 상태입니다');
+      return merged;
+    } catch (e) {
+      refreshSync({ busy: false, err: e.message });
+      if (!silent) showToast('☁️ 내려받기 실패');
+      return 0;
+    }
+  }
+
+  // 전체 업로드 (첫 연결 시 로컬 데이터를 통째로 올린다)
+  async function syncUploadAll() {
+    if (!sbConf().on) { showToast('먼저 URL·키를 저장하세요'); return; }
+    for (const r of saved) sbQueueAdd(r.round);
+    refreshSync();
+    await syncFlush();
+  }
+
+  async function handleSyncSave() {
+    const url = sbUrlInput.trim().replace(/\/+$/, '');
+    const key = sbKeyInput.trim();
+    if (!url || !key) { showToast('URL 과 anon key 를 모두 입력하세요'); return; }
+    if (!/^https:\/\/.+\.supabase\.co$/.test(url)) { showToast('URL 형식: https://xxxx.supabase.co'); return; }
+    sbSet('sb:url', url); sbSet('sb:key', key);
+    if (sbOwnerInput.trim()) sbSet('sb:owner', sbOwnerInput.trim()); else sbEnsureOwner();
+    setSbOwnerInput(sbGet('sb:owner'));
+    refreshSync();
+    showToast('☁️ 연결 정보 저장됨');
+    await syncPull();
+    await syncFlush(true);
+  }
+
+  function handleSyncOff() {
+    if (!confirm('클라우드 연결을 끊을까요? (로컬 데이터는 그대로 남습니다)')) return;
+    sbSet('sb:url', ''); sbSet('sb:key', '');
+    setSbUrlInput(''); setSbKeyInput('');
+    refreshSync();
+    showToast('☁️ 연결 해제됨');
+  }
+
   async function toggleDark() {
     const next = !dark;
     setDark(next);
@@ -849,7 +1487,7 @@ function App() {
     data.games = [...data.games, ...batch.map((b, i) => ({ id: startId + i, ...b }))];
     data.matches = null;
     try {
-      await window.storage.set(`round:${round}`, JSON.stringify(data));
+      await saveRound(data);
       const lbl = strategy === 'MIX' ? '믹스' : `전략 ${strategy}`;
       showToast(`${lbl} ${batch.length}줄 추가 (${data.games.length}/${MAX_LINES})`);
       await loadAll();
@@ -857,14 +1495,50 @@ function App() {
     setGenerating(false);
   }
 
+  // ➕ 커버 보완 — 미포함 번호를 우선 사용해 1~2줄 추가
+  async function handleCoverFix() {
+    if (generating) return;
+    const cur = saved.find(r => r.round === round);
+    if (!cur || cur.games.length === 0) { showToast('먼저 줄을 생성하세요'); return; }
+    const ft = freqTable(cur);
+    if (ft.missing.length === 0) { showToast('미포함 번호 없음 — 이미 45개 전부 커버'); return; }
+    const room = MAX_LINES - cur.games.length;
+    if (room <= 0) { showToast('이미 50줄 가득'); return; }
+    setGenerating(true);
+    const lines = buildCoverLines(ft, Math.min(2, room));
+    if (lines.length === 0) { showToast('보완 줄 생성 실패'); setGenerating(false); return; }
+    const startId = Math.max(...cur.games.map(g => g.id)) + 1;
+    cur.games = [...cur.games, ...lines.map((b, i) => Object.assign({ id: startId + i }, b))];
+    cur.matches = null;
+    try {
+      await saveRound(cur);
+      const after = freqTable(cur);
+      showToast(`커버 보완 ${lines.length}줄 추가 · 미포함 ${ft.missing.length} → ${after.missing.length}개`);
+      await loadAll();
+    } catch (e) { showToast('저장 실패'); }
+    setGenerating(false);
+  }
+
   async function handleClearRound() {
     if (!confirm(`${round}회차 모두 삭제?`)) return;
-    try { await window.storage.delete(`round:${round}`); showToast('초기화'); await loadAll(); } catch (e) {}
+    try {
+      await window.storage.delete(`round:${round}`);
+      await window.storage.delete(`lb:${round}`);
+      sbQueueDel([round]);
+      sbDeleteRound(round);
+      showToast('초기화'); await loadAll();
+    } catch (e) {}
   }
 
   async function handleDelete(rd) {
     if (!confirm(`${rd}회차 삭제?`)) return;
-    try { await window.storage.delete(`round:${rd}`); showToast('삭제'); await loadAll(); } catch (e) {}
+    try {
+      await window.storage.delete(`round:${rd}`);
+      await window.storage.delete(`lb:${rd}`);
+      sbQueueDel([rd]);
+      sbDeleteRound(rd);
+      showToast('삭제'); await loadAll();
+    } catch (e) {}
   }
 
   async function handleAutoFetch() {
@@ -892,13 +1566,14 @@ function App() {
         const result = await fetchWinNumbers(r.round);
         const matches = r.games.map(g => ({ ...g, ...calculatePrize(g.numbers, result.nums, result.bonus) }));
         r.winNumbers = result.nums; r.bonus = result.bonus; r.matches = matches;
-        await window.storage.set(`round:${r.round}`, JSON.stringify(r));
+        await saveRound(r, { defer: true });
         success++;
         await new Promise(rs => setTimeout(rs, 500));
       } catch (e) { failed++; }
     }
     showToast(`✓ 성공 ${success} / 실패 ${failed}`);
     await loadAll();
+    syncFlush(true);
     setAutoMatching(false);
   }
 
@@ -914,7 +1589,7 @@ function App() {
     const matches = target.games.map(g => ({ ...g, ...calculatePrize(g.numbers, nums, bonus) }));
     target.winNumbers = nums; target.bonus = bonus; target.matches = matches;
     try {
-      await window.storage.set(`round:${selRound}`, JSON.stringify(target));
+      await saveRound(target);
       showToast('매칭 완료!'); await loadAll();
       setWinInput(['', '', '', '', '', '', '']);
     } catch (e) { showToast('저장 실패'); }
@@ -948,7 +1623,7 @@ function App() {
       winNumbers: pastResult.nums, bonus: pastResult.bonus, matches, backtest: true
     };
     try {
-      await window.storage.set(`round:${pastResult.round}`, JSON.stringify(data));
+      await saveRound(data);
       const wins = matches.filter(m => m.tier > 0);
       const totalAmt = matches.reduce((s, m) => s + m.amount, 0);
       showToast(`백테스트: ${wins.length}게임 당첨 / +${totalAmt.toLocaleString()}원`);
@@ -969,7 +1644,7 @@ function App() {
       recordOnly: true
     };
     try {
-      await window.storage.set(`round:${pastResult.round}`, JSON.stringify(data));
+      await saveRound(data);
       showToast(`${pastResult.round}회차 기록 저장`);
       await loadAll();
     } catch (e) { showToast('저장 실패'); }
@@ -1006,10 +1681,11 @@ function App() {
       if (!data.rounds || !Array.isArray(data.rounds)) throw new Error('잘못된 파일');
       if (!confirm(`${data.rounds.length}개 복원, 병합. 계속?`)) return;
       for (const r of data.rounds) {
-        if (r.round && r.games !== undefined) await window.storage.set(`round:${r.round}`, JSON.stringify(r));
+        if (r.round && r.games !== undefined) await saveRound(r, { defer: true });
       }
       showToast(`${data.rounds.length}개 복원!`);
       await loadAll();
+      syncFlush(true);
     } catch (err) { showToast('복원 실패: ' + err.message); }
     e.target.value = '';
   }
@@ -1052,6 +1728,17 @@ function App() {
   })();
 
   const currentRound = saved.find(r => r.round === round);
+  // 🆕 [A] 생성 탭 커버 체크 — 미포함 번호 + 한 번호 집중도
+  const coverInfo = useMemo(() => {
+    if (!currentRound || currentRound.games.length === 0) return null;
+    const ft = freqTable(currentRound);
+    const top = ft.rows[0];
+    return {
+      ft, top,
+      used: 45 - ft.missing.length,
+      heavy: !!top && top.count > ft.lines / 2
+    };
+  }, [currentRound, currentRound && currentRound.games.length]);
   const currentCount = currentRound ? currentRound.games.length : 0;
   const remaining = MAX_LINES - currentCount;
   const unmatchedCount = saved.filter(r => !r.matches && r.games.length > 0).length;
@@ -1187,6 +1874,51 @@ function App() {
               </div>
             )}
 
+            {/* 🆕 [A] 커버 체크 + 집중도 알림 */}
+            {coverInfo && (
+              <div className={`${card} rounded-2xl shadow-md p-4`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-bold text-sm flex items-center gap-2">
+                    <Target className="w-4 h-4 text-emerald-500" /> 커버 현황
+                  </div>
+                  <span className={`text-xs font-bold ${coverInfo.used === 45 ? 'text-emerald-500' : textDim}`}>
+                    {coverInfo.used}/45번
+                  </span>
+                </div>
+                <div className={`h-2 rounded-full mb-2.5 ${dark ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                  <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all"
+                    style={{ width: `${(coverInfo.used / 45) * 100}%` }} />
+                </div>
+
+                {coverInfo.ft.missing.length > 0 ? (
+                  <>
+                    <div className={`text-xs leading-relaxed rounded-xl px-3 py-2 ${dark ? 'bg-amber-900/30 text-amber-200 border border-amber-800' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>
+                      미포함: <strong>{coverInfo.ft.missing.join('·')}번</strong> ⚠️
+                      <span className={`ml-1 ${textDim}`}>({coverInfo.ft.missing.length}개)</span>
+                      <div className={`text-[11px] mt-1 ${dark ? 'text-amber-300/80' : 'text-amber-700'}`}>
+                        이 번호가 나오면 {round}회차는 그 자리를 못 맞춥니다.
+                      </div>
+                    </div>
+                    <button onClick={handleCoverFix} disabled={generating || remaining <= 0}
+                      className="w-full mt-2 py-2.5 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 shadow active:scale-95 disabled:opacity-50">
+                      ➕ 커버 보완 (미포함 우선 {Math.min(2, Math.max(1, Math.ceil(coverInfo.ft.missing.length / 6)))}줄 추가)
+                    </button>
+                  </>
+                ) : (
+                  <div className={`text-xs rounded-xl px-3 py-2 ${dark ? 'bg-emerald-900/30 text-emerald-200' : 'bg-emerald-50 text-emerald-700'}`}>
+                    ✓ 1~45번을 모두 커버했습니다.
+                  </div>
+                )}
+
+                {coverInfo.heavy && (
+                  <div className={`text-xs mt-2 leading-relaxed rounded-xl px-3 py-2 ${dark ? 'bg-rose-900/30 text-rose-200 border border-rose-800' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                    ⚠️ <strong>{coverInfo.top.n}번이 {coverInfo.top.count}줄에 집중</strong>
+                    <span className={textDim}> (전체 {coverInfo.ft.lines}줄의 절반 초과)</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {currentRound && currentRound.games.length > 0 && (
               <div className={`${card} rounded-2xl shadow-md p-3`}>
                 <div className={`text-xs ${textDim} font-semibold mb-2 px-1`}>{round}회차 저장된 번호</div>
@@ -1244,6 +1976,9 @@ function App() {
                           <Ball n={r.bonus} sm bonus />
                         </div>
                       </div>
+                    )}
+                    {r.games.length > 0 && (
+                      <FreqPanel r={r} dark={dark} textDim={textDim} />
                     )}
                     {r.games.length > 0 && (
                       <div className="p-3 space-y-1 max-h-72 overflow-y-auto">
@@ -1566,6 +2301,179 @@ function App() {
             </div>
             )}
 
+            {/* 🆕 [C] 분석 리더보드 */}
+            {(lbLoading || lbRows.length > 0) && (
+              <div className={`${card} rounded-2xl shadow-md p-4`}>
+                <div className="text-sm font-bold flex items-center gap-2">
+                  <Cpu className="w-4 h-4 text-indigo-500" /> 🏁 분석 리더보드
+                </div>
+                <div className={`text-[11px] ${textDim} mt-1 mb-3 leading-relaxed`}>
+                  최근 {lbRows.length}회 당첨번호가 <strong>12개 분석 축</strong>에서 각각 몇 위였는지 ·
+                  각 회차는 <strong>그 회차 직전 데이터만</strong> 사용합니다 (미래 정보 차단)
+                </div>
+
+                {lbLoading && lbRows.length === 0 ? (
+                  <div className={`flex items-center justify-center gap-2 py-8 ${textDim} text-xs`}>
+                    <Loader2 className="w-4 h-4 animate-spin" /> 12개 축 계산 중...
+                  </div>
+                ) : (
+                  <>
+                    {/* ── 화면1: 회차별 상세 ── */}
+                    <div className="overflow-x-auto no-scrollbar -mx-1 px-1">
+                      <table className="text-[10px] border-collapse">
+                        <thead>
+                          <tr className={textDim}>
+                            <th className="py-1 px-1 text-left font-semibold sticky left-0 z-10" style={{ background: 'inherit' }}>회차</th>
+                            <th className="py-1 px-1 font-semibold">번호</th>
+                            {AXES.map(a => (
+                              <th key={a.k} className="py-1 px-1 font-semibold whitespace-nowrap">{a.emoji}<br />{a.label}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {lbRows.slice(0, lbAll ? LB_RECENT : 3).map(row => (
+                            <React.Fragment key={row.round}>
+                              {row.nums.concat([row.bonus]).map((n, i) => (
+                                <tr key={n + '_' + i} className={i === 0 ? `border-t-2 ${dark ? 'border-slate-600' : 'border-slate-300'}` : ''}>
+                                  {i === 0 && (
+                                    <td rowSpan={7} className={`px-1 align-top font-bold whitespace-nowrap ${textDim}`}>
+                                      {row.round}회
+                                      <div className={`text-[9px] font-normal ${textDim}`}>{row.lines}줄</div>
+                                    </td>
+                                  )}
+                                  <td className="px-1 py-0.5">
+                                    <div className="flex items-center gap-0.5">
+                                      <Ball n={n} sm />
+                                      {i === 6 && <span className={`text-[8px] ${textDim}`}>보</span>}
+                                    </div>
+                                  </td>
+                                  {AXES.map(a => {
+                                    const c = row.cells[a.k];
+                                    const rk = c ? c[i] : null;
+                                    return (
+                                      <td key={a.k} className="px-0.5 py-0.5 text-center font-bold rounded"
+                                        style={rankColor(rk, dark)}>{rk || '−'}</td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {lbRows.length > 3 && (
+                      <button onClick={() => setLbAll(!lbAll)}
+                        className={`w-full mt-2 py-2 rounded-xl text-xs font-semibold active:scale-95 ${dark ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-600'}`}>
+                        {lbAll ? '최근 3회만 보기 ▲' : `최근 ${lbRows.length}회 전부 보기 ▼`}
+                      </button>
+                    )}
+                    <div className={`text-[10px] ${textDim} mt-1.5`}>
+                      🔵 파랑 = 그 축에서 상위(1위쪽) · 🔴 빨강 = 하위(45위쪽) · <strong>−</strong> = 그 회차에 저장된 줄이 없어 계산 불가
+                    </div>
+
+                    {/* ── 화면2: 축별 평균순위 리더보드 ── */}
+                    {lbBoard && (
+                      <div className={`mt-4 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
+                        <div className="text-xs font-bold mb-1">🏆 축별 당첨번호 평균 순위 (최근 {lbRows.length}회 · 낮을수록 위)</div>
+                        <div className={`text-[10px] ${textDim} mb-2.5`}>
+                          본번호 6개 기준 · 무작위 기대 = <strong>{RANDOM_EXPECT_RANK}위</strong>
+                        </div>
+                        <div className="space-y-1.5">
+                          {lbBoard.map((a, i) => {
+                            const better = a.avg < RANDOM_EXPECT_RANK;
+                            return (
+                              <div key={a.k} className="flex items-center gap-2">
+                                <span className={`w-4 text-[10px] font-bold text-right shrink-0 ${i === 0 ? 'text-emerald-500' : textDim}`}>{i + 1}</span>
+                                <span className="text-xs w-20 shrink-0 truncate">{a.emoji} {a.label}</span>
+                                <div className={`relative flex-1 h-4 rounded ${dark ? 'bg-slate-700' : 'bg-slate-100'}`}>
+                                  <div className={`h-full rounded ${better ? 'bg-blue-500' : 'bg-rose-400'}`}
+                                    style={{ width: `${Math.min(100, (a.avg / 45) * 100)}%` }} />
+                                  {/* 무작위 기대 기준선 */}
+                                  <div className="absolute top-0 h-full border-l-2 border-dashed border-slate-500"
+                                    style={{ left: `${(RANDOM_EXPECT_RANK / 45) * 100}%` }} />
+                                </div>
+                                <span className={`w-11 text-right text-xs font-bold shrink-0 ${better ? 'text-blue-500' : textDim}`}>
+                                  {a.avg.toFixed(1)}위
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className={`text-[11px] mt-2.5 leading-relaxed rounded-xl px-3 py-2 ${dark ? 'bg-amber-900/30 text-amber-200' : 'bg-amber-50 text-amber-800'}`}>
+                          ⚠️ 점선이 <strong>무작위 기대(23위)</strong>입니다. 10회 표본은 작아서
+                          <strong> 순위가 매주 바뀔 수 있습니다.</strong> 어느 축이 위로 왔다고 그 축이 맞히는 축이라는 뜻은 아닙니다.
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* 🆕 화면3 · 역대 순위 프로필 */}
+            {rankProfile && (
+              <div className={`${card} rounded-2xl shadow-md p-4`}>
+                <div className="text-sm font-bold flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4 text-indigo-500" /> 📈 역대 순위 프로필
+                </div>
+                <div className={`text-[11px] ${textDim} mt-1 mb-3 leading-relaxed`}>
+                  매칭 완료 {rankProfile.rows.length}개 회차 · 당첨번호 6개가 그 회차 <strong>내 빈도 순위표</strong>에서 몇 위였는지
+                </div>
+
+                <div className="overflow-x-auto no-scrollbar">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className={`${textDim} text-left`}>
+                        <th className="py-1 pr-2 font-semibold">회차</th>
+                        <th className="py-1 pr-2 font-semibold">당첨 6개의 빈도순위</th>
+                        <th className="py-1 pr-2 font-semibold text-right">평균</th>
+                        <th className="py-1 pr-2 font-semibold text-right">TOP7</th>
+                        <th className="py-1 font-semibold text-right">미보유</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rankProfile.rows.map(x => (
+                        <tr key={x.round} className={`border-t ${dark ? 'border-slate-700' : 'border-slate-100'}`}>
+                          <td className="py-1.5 pr-2 font-semibold whitespace-nowrap">{x.round}회</td>
+                          <td className={`py-1.5 pr-2 tabular-nums ${textDim}`}>{x.ranksAsc.join(' · ')}</td>
+                          <td className="py-1.5 pr-2 text-right font-bold">{x.avgRank.toFixed(1)}</td>
+                          <td className={`py-1.5 pr-2 text-right font-bold ${x.top7Hits > 0 ? 'text-emerald-500' : textDim}`}>{x.top7Hits}</td>
+                          <td className={`py-1.5 text-right font-bold ${x.missing.length > 0 ? 'text-red-500' : textDim}`}>
+                            {x.missing.length > 0 ? `${x.missing.length}⚠️` : '0'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={`grid grid-cols-3 gap-2 mt-3 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
+                  <div className={`rounded-xl py-2 text-center ${dark ? 'bg-slate-700/40' : 'bg-slate-50'}`}>
+                    <div className={`text-[10px] ${textDim}`}>평균순위의 평균</div>
+                    <div className="text-lg font-bold">{rankProfile.avgOfAvg.toFixed(1)}위</div>
+                  </div>
+                  <div className={`rounded-xl py-2 text-center ${dark ? 'bg-slate-700/40' : 'bg-slate-50'}`}>
+                    <div className={`text-[10px] ${textDim}`}>TOP7 적중 합계</div>
+                    <div className="text-lg font-bold text-emerald-500">{rankProfile.top7Total}</div>
+                    <div className={`text-[10px] ${textDim}`}>기대 {rankProfile.top7Expect.toFixed(1)}</div>
+                  </div>
+                  <div className={`rounded-xl py-2 text-center ${dark ? 'bg-slate-700/40' : 'bg-slate-50'}`}>
+                    <div className={`text-[10px] ${textDim}`}>미보유 당첨번호</div>
+                    <div className={`text-lg font-bold ${rankProfile.missTotal > 0 ? 'text-red-500' : ''}`}>{rankProfile.missTotal}개</div>
+                    <div className={`text-[10px] ${textDim}`}>{rankProfile.deadRounds}개 회차</div>
+                  </div>
+                </div>
+
+                <div className={`text-[11px] mt-2.5 leading-relaxed rounded-xl px-3 py-2 ${dark ? 'bg-slate-700/40 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+                  📌 많이 실은 번호가 더 잘 나오는 건 아닙니다. TOP7 적중 합계
+                  <strong> {rankProfile.top7Total}</strong>이 우연 기대치 <strong>{rankProfile.top7Expect.toFixed(1)}</strong>
+                  {Math.abs(rankProfile.top7Total - rankProfile.top7Expect) < Math.max(1, rankProfile.top7Expect * 0.5) ? ' 과 사실상 일치' : ' 과 차이가 있어 보여도 표본이 작아 우연 범위'}
+                  하고, 평균순위도 무작위 기대(23위)에 수렴합니다. 빈도는 <strong>내가 어디에 돈을 몰았는지</strong>를 보여줄 뿐 예측력이 아닙니다.
+                </div>
+              </div>
+            )}
+
             <div className={`${card} rounded-2xl shadow-md p-4`}>
               <div className="text-sm font-bold mb-3">9전략 가이드</div>
               <div className="space-y-1.5 text-xs">
@@ -1586,6 +2494,79 @@ function App() {
         {/* ===== 설정 ===== */}
         {tab === 'set' && (
           <div className="space-y-4">
+            {/* 🆕 [B] 클라우드 동기화 */}
+            <div className={`${card} rounded-2xl shadow-md p-4`}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="font-bold flex items-center gap-2">
+                  <Cloud className="w-4 h-4 text-sky-500" /> ☁️ 클라우드 동기화
+                </div>
+                <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${sync.busy
+                  ? 'bg-blue-500 text-white'
+                  : sync.err ? 'bg-red-500 text-white'
+                  : sync.on ? 'bg-emerald-500 text-white'
+                  : (dark ? 'bg-slate-700 text-slate-300' : 'bg-slate-200 text-slate-600')}`}>
+                  {sync.busy ? '동기화 중…' : sync.err ? '오류' : sync.on ? '연결됨' : '미설정'}
+                </span>
+              </div>
+              <div className={`text-[11px] ${textDim} mb-3 leading-relaxed`}>
+                {sync.on
+                  ? <>번호 저장·매칭할 때마다 자동 업로드됩니다.
+                      {sync.pending > 0 && <> · <span className="text-amber-500 font-bold">대기 {sync.pending}건</span> (다음 접속 때 재시도)</>}
+                      {sync.last && <> · 마지막 {new Date(sync.last).toLocaleString('ko-KR')}</>}</>
+                  : <>휴대폰·PC 데이터를 자동으로 맞춰줍니다. 설정 안 해도 앱은 그대로 동작합니다(로컬 저장).</>}
+              </div>
+              {sync.err && (
+                <div className={`text-[11px] mb-2 rounded-xl px-3 py-2 ${dark ? 'bg-red-900/30 text-red-200' : 'bg-red-50 text-red-700'}`}>
+                  {sync.err}
+                </div>
+              )}
+
+              <label className={`text-[11px] ${textDim} font-semibold`}>① Project URL</label>
+              <input value={sbUrlInput} onChange={e => setSbUrlInput(e.target.value)} placeholder="https://xxxxxxxx.supabase.co"
+                className={`w-full mt-1 mb-2 px-3 py-2 text-xs border-2 ${inputBase} rounded-xl focus:border-sky-500 focus:outline-none`} />
+              <label className={`text-[11px] ${textDim} font-semibold`}>② anon public key</label>
+              <input value={sbKeyInput} onChange={e => setSbKeyInput(e.target.value)} placeholder="eyJhbGciOi..."
+                className={`w-full mt-1 mb-2 px-3 py-2 text-xs border-2 ${inputBase} rounded-xl focus:border-sky-500 focus:outline-none`} />
+              <label className={`text-[11px] ${textDim} font-semibold`}>③ 내 동기화 키 (다른 기기엔 이 값을 그대로 붙여넣기)</label>
+              <div className="flex gap-2 mt-1 mb-3">
+                <input value={sbOwnerInput} onChange={e => setSbOwnerInput(e.target.value)} placeholder="저장하면 자동 생성됩니다"
+                  className={`flex-1 px-3 py-2 text-xs border-2 ${inputBase} rounded-xl focus:border-sky-500 focus:outline-none`} />
+                <button onClick={() => { if (sbOwnerInput) { navigator.clipboard?.writeText(sbOwnerInput); showToast('동기화 키 복사됨'); } }}
+                  className={`px-3 rounded-xl text-xs font-semibold ${dark ? 'bg-slate-700' : 'bg-slate-200'} active:scale-95`}>복사</button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={handleSyncSave} disabled={sync.busy}
+                  className="bg-sky-500 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95 disabled:opacity-50">저장 · 연결</button>
+                <button onClick={() => syncPull()} disabled={!sync.on || sync.busy}
+                  className={`py-2.5 rounded-xl text-sm font-bold active:scale-95 disabled:opacity-40 ${dark ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                  ⬇ 내려받기
+                </button>
+                <button onClick={syncUploadAll} disabled={!sync.on || sync.busy}
+                  className={`py-2.5 rounded-xl text-sm font-bold active:scale-95 disabled:opacity-40 ${dark ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                  ⬆ 전체 업로드
+                </button>
+                <button onClick={handleSyncOff} disabled={!sync.hasConf}
+                  className="py-2.5 rounded-xl text-sm font-bold text-red-500 active:scale-95 disabled:opacity-40 border border-red-300 dark:border-red-800">
+                  연결 해제
+                </button>
+              </div>
+
+              <div className={`text-[11px] ${textDim} mt-3 leading-relaxed space-y-1`}>
+                <p className="font-bold">📋 값 복사하는 곳 (한 번만)</p>
+                <p>1. <strong>supabase.com</strong> 로그인 → 프로젝트 선택 (없으면 New project)</p>
+                <p>2. 왼쪽 <strong>SQL Editor</strong> → 저장소의 <strong>supabase_lotto.sql</strong> 전체 붙여넣고 <strong>Run</strong></p>
+                <p>3. 왼쪽 <strong>Settings → API</strong> → <strong>Project URL</strong> 복사 → 위 ①</p>
+                <p>4. 같은 화면 <strong>Project API keys → anon public</strong> 복사 → 위 ②</p>
+                <p>5. <strong>저장 · 연결</strong> 누르면 ③ 동기화 키가 자동 생성 → <strong>⬆ 전체 업로드</strong></p>
+                <p>6. 다른 기기에서는 ①②를 같게 넣고 ③에 <strong>같은 동기화 키</strong>를 붙여넣으세요</p>
+                <p className="text-emerald-600 dark:text-emerald-400 mt-1">
+                  🔒 anon key 는 공개돼도 안전합니다 — RLS 가 ③ 동기화 키를 검사해서, 키를 모르면 아무 행도 읽거나 쓸 수 없습니다.
+                  ③ 키는 저장소에 올리지 말고 이 기기에만 두세요.
+                </p>
+              </div>
+            </div>
+
             <div className={`${card} rounded-2xl shadow-md p-4`}>
               <div className="font-bold mb-3 flex items-center gap-2">
                 <FlaskConical className="w-4 h-4 text-purple-500" /> 백테스트 사용법

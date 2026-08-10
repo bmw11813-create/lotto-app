@@ -8,3 +8,9 @@ index_backup.html
 # 실행 산출물
 __pycache__/
 *.log
+
+# 소급 분석 (개인 구매 기록 포함 — 절대 push 금지)
+retro_source.py
+retro_source.xlsx
+retro_source.html
+로또백업_*.json
