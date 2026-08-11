@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v14</title>
+  <title>로또 분석기 v15</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -99,7 +99,11 @@ function sbRow(rec, owner) {
     games: rec.games || [], win_numbers: rec.winNumbers || null,
     bonus: (rec.bonus === 0 || rec.bonus) ? rec.bonus : null,
     matches: rec.matches || null,
-    extra: { backtest: !!rec.backtest, recordOnly: !!rec.recordOnly, updatedAt: rec.updatedAt || null }
+    // 🧪 모의 실험은 extra.mock 에 통째로 실어 보낸다 (games 와 절대 섞지 않음)
+    extra: {
+      backtest: !!rec.backtest, recordOnly: !!rec.recordOnly,
+      mock: rec.mock || null, updatedAt: rec.updatedAt || null
+    }
   };
 }
 
@@ -114,6 +118,7 @@ function sbToRec(row) {
   };
   if (ex.backtest) rec.backtest = true;
   if (ex.recordOnly) rec.recordOnly = true;
+  if (ex.mock) rec.mock = ex.mock;
   return rec;
 }
 
@@ -190,7 +195,7 @@ const Cpu = _ic([{t:'rect',x:4,y:4,width:16,height:16,rx:2},{t:'rect',x:9,y:9,wi
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 14;
+const APP_VERSION = 15;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -918,6 +923,174 @@ function StratChips({ list, dark }) {
   );
 }
 
+// ===== 🧪 모의 실험 (가상 게임 · 실구매와 완전 분리) =====
+// 규칙 "고정 공식 횟수 매칭":
+//   ① 이번 회차에 내가 저장한 줄들의 빈도표를 만든다 (번호별로 몇 줄에 실렸는지)
+//   ② 고정 공식 [11회 1개 · 7회 1개 · 4회 2개 · 1회 2개] 의 각 횟수와
+//      "같은 횟수로 등장한 번호 그룹"을 찾아 필요한 개수만큼 조합한다.
+//      정확히 같은 횟수 그룹이 없으면 가장 가까운 횟수 그룹으로 대체하고 "대체됨"으로 표시한다.
+//   ③ 모든 조합을 가상 게임으로 만든다.  예) 20확정 × 7회그룹 택1 × 4회그룹 택2 × 1회그룹 택2 = 450게임
+//   ※ 공식은 설정 칸에서 직접 고칠 수 있다 (기본 11·7·4·4·1·1). 전주 당첨번호로 매주 새로 계산하지 않는다.
+// ⚠️ 여기서 만든 게임은 rec.mock 에만 들어가고 rec.games / rec.matches 는 건드리지 않는다.
+//    통계 탭 손익은 games·matches 만 보므로 모의 실험은 손익에 절대 섞이지 않는다.
+const MOCK_MAX = 2000;                             // 이 개수를 넘으면 경고 후 무작위 샘플링
+const MOCK_P3 = 194130 / 8145060;                  // 무작위 한 줄이 3개 이상 맞을 확률 ≈ 2.38%
+const MOCK_PROFILE_KEY = 'settings:mockProfile';
+const MOCK_DEFAULT_PROFILE = [11, 7, 4, 4, 1, 1];  // 고정 공식 (설정 칸에서 수정 가능)
+
+// "11,7,4,4,1,1" 같은 입력 → 숫자 6개 배열. 형식이 틀리면 null (기본값으로 되돌리지 않고 사용자에게 알린다)
+function parseMockProfile(str) {
+  const parts = String(str || '').split(/[^0-9]+/).filter(s => s.length > 0).map(Number);
+  if (parts.length !== 6) return null;
+  if (parts.some(n => !isFinite(n) || n < 1 || n > MAX_LINES)) return null;
+  return parts.sort((a, b) => b - a);
+}
+
+function nCk(n, k) {
+  if (k < 0 || k > n || n < 0) return 0;
+  k = Math.min(k, n - k);
+  let r = 1;
+  for (let i = 1; i <= k; i++) r = r * (n - k + i) / i;
+  return Math.round(r);
+}
+
+// pool 에서 k개를 뽑는 조합 중 idx 번째(사전순)를 바로 계산한다 (전부 만들지 않아 폰에서도 안 멈춤)
+function comboAt(pool, k, idx) {
+  const res = [];
+  const n = pool.length;
+  let start = 0;
+  for (let i = 0; i < k; i++) {
+    for (let j = start; j < n; j++) {
+      const c = nCk(n - j - 1, k - i - 1);
+      if (idx < c) { res.push(pool[j]); start = j + 1; break; }
+      idx -= c;
+    }
+  }
+  return res;
+}
+
+// 모의 실험 대상 회차 고르기 — 이번 회차(=줄이 있는 최신 회차, 아직 매칭 안 된 쪽 우선)
+function pickMockTarget(saved) {
+  const usable = (saved || []).filter(r =>
+    r && !r.backtest && !r.recordOnly && Array.isArray(r.games) && r.games.length > 0);
+  const byDesc = (a, b) => b.round - a.round;
+  const open = usable.filter(r => !r.matches).sort(byDesc);
+  return open[0] || usable.slice().sort(byDesc)[0] || null;
+}
+
+// 고정 공식대로 "어느 횟수 그룹에서 몇 개를 뽑을지" 설계도를 만든다
+function buildMockPlan(profileRaw, curRec) {
+  if (!curRec) return null;
+  const profile = (Array.isArray(profileRaw) && profileRaw.length === 6
+    ? profileRaw.slice() : MOCK_DEFAULT_PROFILE.slice()).sort((a, b) => b - a);
+
+  const cf = freqTable(curRec);
+  if (cf.lines === 0) return null;
+  // 이번 회차에 실제로 실은 번호만 사용한다 (0회 번호는 쓰지 않음 = 몰빵 구조 그대로)
+  const groups = {};
+  cf.rows.forEach(r => { if (r.count > 0) (groups[r.count] = groups[r.count] || []).push(r.n); });
+  const avail = Object.keys(groups).map(Number).sort((a, b) => a - b);
+  if (avail.length === 0) return null;
+
+  // 프로필의 각 횟수 → 실제 존재하는 횟수로 (같은 횟수 없으면 가장 가까운 횟수, 동률이면 더 큰 쪽)
+  const need = {}, from = {};
+  for (const c of profile) {
+    let best = avail[0];
+    for (const a of avail) {
+      const d = Math.abs(a - c), bd = Math.abs(best - c);
+      if (d < bd || (d === bd && a > best)) best = a;
+    }
+    need[best] = (need[best] || 0) + 1;
+    (from[best] = from[best] || []).push(c);
+  }
+
+  // 그룹 크기보다 많이 필요하면 그만큼만 뽑고, 모자란 자리는 여유 있는 가까운 그룹에서 채운다
+  const rows = Object.keys(need).map(Number).sort((a, b) => b - a).map(c => ({
+    count: c, pool: groups[c].slice(), want: need[c],
+    take: Math.min(need[c], groups[c].length), from: from[c].slice()
+  }));
+  let short = 6 - rows.reduce((s, g) => s + g.take, 0);
+  while (short > 0) {
+    const room = rows.filter(g => g.take < g.pool.length);
+    if (room.length === 0) break;
+    room.sort((a, b) => (b.pool.length - b.take) - (a.pool.length - a.take) || b.count - a.count);
+    room[0].take++; room[0].filled = (room[0].filled || 0) + 1;
+    short--;
+  }
+  if (short > 0) return null;   // 이번 회차에 쓴 번호가 6개 미만 — 사실상 불가능
+
+  let total = 1;
+  rows.forEach(g => { g.ways = nCk(g.pool.length, g.take); total *= g.ways; });
+  const poolNums = rows.reduce((a, g) => a.concat(g.pool), []).sort((a, b) => a - b);
+  const fixed = rows.filter(g => g.take === g.pool.length).reduce((a, g) => a.concat(g.pool), []).sort((a, b) => a - b);
+  rows.forEach(g => { g.subs = g.from.filter(c => c !== g.count); });   // 대체된 공식 횟수들
+  return {
+    round: curRec.round, srcLines: curRec.games.length,
+    profile, groups: rows, total, poolNums, fixed,
+    substituted: rows.some(g => g.subs.length > 0) || rows.some(g => g.filled)
+  };
+}
+
+// 설계도 → 실제 가상 게임 목록. 2000개 초과면 씨앗 고정 난수로 2000개만 뽑는다(항상 같은 결과).
+function buildMockCombos(plan, seedBase) {
+  const rows = plan.groups;
+  const total = plan.total;
+  const decode = (idx) => {
+    const nums = [];
+    let rest = idx;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const g = rows[i];
+      const sub = rest % g.ways;
+      rest = Math.floor(rest / g.ways);
+      const part = comboAt(g.pool, g.take, sub);
+      for (const n of part) nums.push(n);
+    }
+    return nums.sort((a, b) => a - b);
+  };
+  if (total <= MOCK_MAX) {
+    const out = [];
+    for (let i = 0; i < total; i++) out.push(decode(i));
+    return { combos: out, sampled: false, seed: 0 };
+  }
+  const seed = (seedBase * 2654435761 + total) >>> 0;
+  const rnd = mulberry32(seed);
+  const seen = {}, out = [];
+  let guard = 0;
+  while (out.length < MOCK_MAX && guard < MOCK_MAX * 50) {
+    guard++;
+    const idx = Math.floor(rnd() * total);
+    if (seen[idx]) continue;
+    seen[idx] = 1;
+    out.push(decode(idx));
+  }
+  return { combos: out, sampled: true, seed };
+}
+
+// 가상 게임 채점 — 실구매 손익과 무관, 적중 개수만 본다
+function scoreMock(mock, winNumbers) {
+  if (!mock || !Array.isArray(mock.combos) || mock.combos.length === 0) return null;
+  if (!Array.isArray(winNumbers) || winNumbers.length !== 6) return null;
+  const win = {};
+  winNumbers.forEach(n => { win[n] = 1; });
+  const dist = [0, 0, 0, 0, 0, 0, 0];
+  let best = null;
+  for (const c of mock.combos) {
+    let m = 0;
+    for (const n of c) if (win[n]) m++;
+    dist[m]++;
+    if (!best || m > best.hits) best = { hits: m, numbers: c };
+  }
+  const games = mock.combos.length;
+  const hit3 = dist[3] + dist[4] + dist[5] + dist[6];
+  const expect = games * MOCK_P3;
+  const ratio = expect > 0 ? hit3 / expect : 0;
+  let verdict, tone;
+  if (ratio >= 1.5) { verdict = '기대치 초과 = 이번 주는 운이 좋았음'; tone = 'up'; }
+  else if (ratio <= 0.5) { verdict = '기대치 미달 = 프로필이 오히려 방해했음'; tone = 'down'; }
+  else { verdict = '기대치와 비슷 = 프로필 반복 안 됨'; tone = 'flat'; }
+  return { games, dist, hit3, expect, ratio, best, verdict, tone };
+}
+
 // ===== 📊 [C] 분석 리더보드 — 12개 축 =====
 // 9전략(v13 선호순위) + 내 빈도순위 + 핫넘버 + 콜드넘버.
 // ⚠️ 각 회차는 "그 회차 직전 데이터"만으로 순위를 만든다 (미래 정보 차단).
@@ -1127,6 +1300,205 @@ const MAX_LINES = 50;
 const BATCH_SIZE = 5;
 
 // ===== 오늘 날짜 기준 '구매 대상' 회차 자동 계산 =====
+// ===== 🧪 모의 실험 섹션 (매칭 탭 하단) =====
+function MockSection({ saved, dark, card, text, textDim, inputBase, profile, onProfileSave, onGen, onDel, busy }) {
+  const target = useMemo(() => pickMockTarget(saved), [saved]);
+  const plan = useMemo(() => {
+    try { return target ? buildMockPlan(profile, target) : null; } catch (e) { return null; }
+  }, [target, profile]);
+  const [pfInput, setPfInput] = useState(profile.join(', '));
+  useEffect(() => { setPfInput(profile.join(', ')); }, [profile]);
+  const mock = target ? target.mock : null;
+  const score = useMemo(() =>
+    (mock && target && target.winNumbers) ? scoreMock(mock, target.winNumbers) : null,
+    [mock, target]);
+  const history = useMemo(() => (saved || [])
+    .filter(r => r && r.mock && Array.isArray(r.mock.combos) && r.mock.combos.length > 0)
+    .sort((a, b) => b.round - a.round)
+    .map(r => ({ round: r.round, mock: r.mock, score: scoreMock(r.mock, r.winNumbers) })),
+    [saved]);
+
+  const soft = dark ? 'bg-slate-700/50' : 'bg-slate-50';
+  const line = dark ? 'border-slate-700' : 'border-slate-200';
+  const toneColor = (t) => t === 'up' ? 'text-orange-500' : (t === 'down' ? 'text-blue-500' : textDim);
+  // 줄이 늘거나 공식이 바뀌면 예전 설계도로 만든 가상 게임은 지금 기준과 맞지 않는다
+  const staleLines = !!(mock && target && mock.srcLines !== target.games.length);
+  const staleProfile = !!(mock && (mock.profile || []).join(',') !== profile.join(','));
+  const stale = staleLines || staleProfile;
+
+  const hist = history.filter(h => h.score);
+  const histSum = hist.length > 0 ? {
+    rounds: hist.length,
+    games: hist.reduce((s, h) => s + h.score.games, 0),
+    hit3: hist.reduce((s, h) => s + h.score.hit3, 0),
+    expect: hist.reduce((s, h) => s + h.score.expect, 0)
+  } : null;
+
+  return (
+    <div className={`${card} rounded-2xl shadow-md p-4 border-2 ${dark ? 'border-cyan-900' : 'border-cyan-200'}`}>
+      <div className="font-bold mb-1 flex items-center gap-2">
+        <FlaskConical className="w-4 h-4 text-cyan-500" /> 🧪 모의 실험
+      </div>
+      <div className={`text-[11px] ${textDim} mb-3 leading-relaxed`}>
+        고정 공식 횟수 매칭 규칙으로 <strong>가상 게임</strong>을 만들어 채점합니다.
+        실제로 사지 않은 줄이며 <strong>통계 탭 손익에 절대 포함되지 않습니다</strong>.
+      </div>
+
+      {/* 고정 공식 설정 칸 */}
+      <div className={`${dark ? 'bg-slate-700/50' : 'bg-slate-50'} rounded-xl p-3 mb-3`}>
+        <div className={`text-[11px] font-semibold ${textDim} mb-1.5`}>
+          횟수 공식 (6칸 · 기본 11·7·4·4·1·1)
+        </div>
+        <div className="flex gap-2">
+          <input type="text" value={pfInput} inputMode="numeric"
+            onChange={e => setPfInput(e.target.value)}
+            placeholder="11, 7, 4, 4, 1, 1"
+            className={`flex-1 px-3 py-2 text-center text-sm font-bold border-2 ${inputBase} rounded-lg focus:border-cyan-500 focus:outline-none`} />
+          <button onClick={() => onProfileSave(pfInput)}
+            className="bg-cyan-600 text-white px-4 py-2 rounded-lg text-sm font-bold active:scale-95">적용</button>
+          <button onClick={() => { setPfInput(MOCK_DEFAULT_PROFILE.join(', ')); onProfileSave(MOCK_DEFAULT_PROFILE.join(', ')); }}
+            className={`${dark ? 'bg-slate-600' : 'bg-slate-200'} px-3 py-2 rounded-lg text-xs font-semibold active:scale-95`}>기본</button>
+        </div>
+        <div className={`text-[10px] ${textDim} mt-1.5 leading-relaxed`}>
+          “11회 실린 번호 1개 · 7회 1개 · 4회 2개 · 1회 2개”로 한 줄을 만든다는 뜻입니다.
+          매주 전주 당첨번호로 다시 계산하지 않고 이 공식을 그대로 씁니다.
+        </div>
+      </div>
+
+      {/* 재료 부족 안내 */}
+      {(!target || !plan) && (
+        <div className={`${dark ? 'bg-amber-900/30 text-amber-200' : 'bg-amber-50 text-amber-900'} rounded-xl p-3 text-xs leading-relaxed`}>
+          <div className="font-bold mb-1 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> 재료 부족</div>
+          {!target && <p>이번 회차에 저장된 줄이 없습니다. 생성 탭에서 줄을 먼저 만드세요.</p>}
+          {target && !plan && <p>{target.round}회차 빈도표로는 6개 번호를 뽑을 수 없습니다. 줄을 더 만들어 주세요.</p>}
+        </div>
+      )}
+
+      {/* 설계도 + 생성 버튼 */}
+      {plan && (
+        <div className={`${soft} rounded-xl p-3 space-y-2`}>
+          <div className="text-xs">
+            <span className="font-bold text-cyan-600">공식 [{plan.profile.join(', ')}]</span>
+            <span className={textDim}> → </span>
+            <span className="font-bold text-cyan-600">{plan.round}회</span>
+            <span className={textDim}> 가상 게임 ({plan.srcLines}줄 기준)</span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {plan.groups.map(g => (
+              <span key={g.count} className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${g.subs.length > 0
+                ? (dark ? 'bg-amber-900/60 text-amber-200' : 'bg-amber-100 text-amber-800')
+                : (dark ? 'bg-cyan-900/60 text-cyan-200' : 'bg-cyan-100 text-cyan-800')}`}>
+                {g.count}회그룹 {g.pool.length}개 중 {g.take}개
+                {g.take === g.pool.length ? ' (확정)' : ''}
+                {g.subs.length > 0 && ` · ${g.subs.join('·')}회 대체됨`}
+              </span>
+            ))}
+          </div>
+          <div className={`text-[11px] ${textDim} leading-relaxed`}>
+            {plan.total.toLocaleString()}게임 · {plan.poolNums.length}개 번호만 사용
+            {plan.fixed.length > 0 && ` · ${plan.fixed.join('·')} 확정`}
+            {plan.poolNums.length <= 20 && ' · 몰빵 구조 ⚠️'}
+            {plan.substituted && ' · 같은 횟수 그룹이 없어 가장 가까운 횟수로 대체됨 ⚠️'}
+          </div>
+          {plan.total > MOCK_MAX && (
+            <div className={`text-[11px] font-semibold ${dark ? 'text-amber-300' : 'text-amber-700'}`}>
+              ⚠️ 조합 {plan.total.toLocaleString()}개 &gt; 상한 {MOCK_MAX.toLocaleString()}개 — 무작위 {MOCK_MAX.toLocaleString()}개만 샘플링합니다
+            </div>
+          )}
+          <button onClick={() => onGen(plan)} disabled={busy}
+            className="w-full bg-gradient-to-r from-cyan-500 to-teal-500 text-white py-2.5 rounded-lg text-sm font-bold flex items-center justify-center gap-1 active:scale-95 disabled:opacity-50">
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />}
+            {mock ? '가상 게임 다시 생성' : '가상 게임 생성'}
+          </button>
+        </div>
+      )}
+
+      {/* 생성 결과 */}
+      {mock && (
+        <div className={`mt-3 rounded-xl p-3 border ${dark ? 'border-cyan-900 bg-slate-800' : 'border-cyan-200 bg-white'}`}>
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-bold text-cyan-600">{target.round}회 가상 게임 {mock.combos.length.toLocaleString()}개</div>
+            <button onClick={() => onDel(target.round)} className={`text-[11px] ${textDim} active:scale-95`}>삭제</button>
+          </div>
+          <div className={`text-[11px] ${textDim} mt-1 leading-relaxed`}>
+            공식 [{(mock.profile || []).join(', ')}] · {(mock.poolNums || []).length}개 번호만 사용
+            {mock.substituted && <span className="font-semibold text-amber-600"> · 가까운 횟수로 대체됨 ⚠️</span>}
+            {mock.sampled && (
+              <span className="font-bold text-amber-600"> · 전체 {mock.total.toLocaleString()}개 중 {mock.combos.length.toLocaleString()}개 무작위 샘플링됨 ⚠️</span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {(mock.poolNums || []).map(n => <Ball key={n} n={n} sm hit={target.winNumbers && target.winNumbers.includes(n)} />)}
+          </div>
+          {stale && (
+            <div className={`text-[11px] mt-2 font-semibold ${dark ? 'text-amber-300' : 'text-amber-700'}`}>
+              ⚠️ {staleLines && `생성 이후 ${target.round}회 줄이 ${mock.srcLines} → ${target.games.length}줄로 바뀌었습니다. `}
+              {staleProfile && `공식이 [${(mock.profile || []).join(', ')}] → [${profile.join(', ')}] 로 바뀌었습니다. `}
+              다시 생성하세요.
+            </div>
+          )}
+
+          {!score && (
+            <div className={`text-[11px] ${textDim} mt-2`}>추첨 후 이 회차를 매칭하면 자동으로 채점됩니다.</div>
+          )}
+
+          {score && (
+            <div className={`mt-2 pt-2 border-t ${line} space-y-1.5`}>
+              <div className="flex items-baseline gap-2">
+                <span className={`text-2xl font-bold ${toneColor(score.tone)}`}>{score.hit3}</span>
+                <span className={`text-xs ${textDim}`}>게임 3개 이상 적중 · 무작위 기대치 {score.expect.toFixed(1)}게임 (2.38%)</span>
+              </div>
+              <div className={`text-xs ${textDim}`}>
+                적중 분포 — {[6, 5, 4, 3].map(k => `${k}개 ${score.dist[k]}`).join(' · ')}
+              </div>
+              {score.best && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className={`text-xs font-semibold ${textDim}`}>최고 {score.best.hits}개</span>
+                  {score.best.numbers.map(n => (
+                    <Ball key={n} n={n} sm hit={target.winNumbers.includes(n)} />
+                  ))}
+                </div>
+              )}
+              <div className={`text-xs font-bold ${toneColor(score.tone)}`}>
+                판정: {score.verdict} (기대치의 {(score.ratio * 100).toFixed(0)}%)
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 회차별 이력 */}
+      {hist.length > 0 && (
+        <div className={`mt-3 pt-3 border-t ${line}`}>
+          <div className={`text-xs font-bold ${textDim} mb-2`}>회차별 모의 실험 이력 ({hist.length}회)</div>
+          <div className="space-y-1">
+            {hist.map(h => (
+              <div key={h.round} className={`flex items-center gap-2 text-[11px] ${soft} rounded-lg px-2 py-1.5`}>
+                <span className="font-bold w-12 shrink-0">{h.round}회</span>
+                <span className={`${textDim} w-16 shrink-0`}>{h.score.games.toLocaleString()}게임</span>
+                <span className="shrink-0">{h.score.hit3}<span className={textDim}> / {h.score.expect.toFixed(1)}</span></span>
+                <span className={`ml-auto font-semibold shrink-0 ${toneColor(h.score.tone)}`}>
+                  {(h.score.ratio * 100).toFixed(0)}% · 최고 {h.score.best ? h.score.best.hits : 0}개
+                </span>
+              </div>
+            ))}
+          </div>
+          {histSum && (
+            <div className={`text-[11px] ${textDim} mt-2 leading-relaxed`}>
+              누적 {histSum.rounds}회 · {histSum.games.toLocaleString()}게임 중 3개 이상 <strong>{histSum.hit3}</strong>게임
+              {' '}(기대치 {histSum.expect.toFixed(1)}) →{' '}
+              <strong className={histSum.hit3 > histSum.expect * 1.2 ? 'text-orange-500' : (histSum.hit3 < histSum.expect * 0.8 ? 'text-blue-500' : '')}>
+                기대치의 {histSum.expect > 0 ? (histSum.hit3 / histSum.expect * 100).toFixed(0) : 0}%
+              </strong>
+              {' '}— 회차가 쌓일수록 이 규칙의 장기 성적이 드러납니다.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // 기준: 1224회 추첨 = 2026-05-16(토) 21:00 KST. 추첨이 지나면 자동으로 다음 회차.
 function getDefaultRound() {
   const BASE_ROUND = 1225; // 1224 추첨 직후 사야 할 회차
@@ -1154,6 +1526,9 @@ function App() {
   const [pastResult, setPastResult] = useState(null);
   const [pastFetching, setPastFetching] = useState(false);
   const [backtesting, setBacktesting] = useState(false);
+  // 🆕 🧪 모의 실험 (가상 게임 — 실구매·손익과 완전 분리)
+  const [mockBusy, setMockBusy] = useState(false);
+  const [mockProfile, setMockProfile] = useState(MOCK_DEFAULT_PROFILE);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [latestVer, setLatestVer] = useState(null);
   // 🆕 통계 탭 · 전략별 선호 순위
@@ -1340,6 +1715,11 @@ function App() {
       try {
         const s = await window.storage.get('settings:dark');
         if (s && s.value === 'true') setDark(true);
+      } catch (e) {}
+      try {
+        const p = await window.storage.get(MOCK_PROFILE_KEY);
+        const parsed = p && p.value ? parseMockProfile(p.value) : null;
+        if (parsed) setMockProfile(parsed);
       } catch (e) {}
     } catch (e) {}
     setLoading(false);
@@ -1595,6 +1975,55 @@ function App() {
     } catch (e) { showToast('저장 실패'); }
   }
 
+  // 🧪 횟수 공식 저장 (6칸 숫자만 허용 · 기기에 남는다)
+  async function handleMockProfileSave(str) {
+    const parsed = parseMockProfile(str);
+    if (!parsed) { showToast(`숫자 6개를 넣어주세요 (1~${MAX_LINES}) 예: 11,7,4,4,1,1`); return; }
+    setMockProfile(parsed);
+    try { await window.storage.set(MOCK_PROFILE_KEY, parsed.join(',')); } catch (e) {}
+    showToast(`공식 [${parsed.join(', ')}] 적용됨`);
+  }
+
+  // 🧪 모의 실험 — 가상 게임 생성 (rec.mock 에만 저장, games/matches 는 손대지 않는다)
+  async function handleMockGen(plan) {
+    if (mockBusy || !plan) return;
+    if (plan.total > MOCK_MAX &&
+        !confirm(`조합이 ${plan.total.toLocaleString()}개입니다.\n무작위 ${MOCK_MAX.toLocaleString()}개만 뽑아 저장할까요?`)) return;
+    const target = saved.find(r => r.round === plan.round);
+    if (!target) { showToast('대상 회차를 찾을 수 없습니다'); return; }
+    setMockBusy(true);
+    try {
+      const built = buildMockCombos(plan, plan.round);
+      target.mock = {
+        isMock: true,
+        createdAt: new Date().toISOString(),
+        srcLines: plan.srcLines,
+        profile: plan.profile,
+        substituted: plan.substituted,
+        groups: plan.groups.map(g => ({ count: g.count, pool: g.pool, take: g.take, subs: g.subs })),
+        poolNums: plan.poolNums, fixed: plan.fixed,
+        total: plan.total, sampled: built.sampled, seed: built.seed,
+        combos: built.combos
+      };
+      await saveRound(target);
+      showToast(`🧪 가상 ${built.combos.length.toLocaleString()}게임 생성${built.sampled ? ' (샘플링)' : ''}`);
+      await loadAll();
+    } catch (e) { showToast('모의 실험 생성 실패'); }
+    setMockBusy(false);
+  }
+
+  async function handleMockDel(rd) {
+    const t = saved.find(r => r.round === rd);
+    if (!t || !t.mock) return;
+    if (!confirm(`${rd}회 가상 게임을 지울까요? (실제로 저장한 줄은 그대로 남습니다)`)) return;
+    delete t.mock;
+    try {
+      await saveRound(t);
+      showToast('가상 게임 삭제');
+      await loadAll();
+    } catch (e) { showToast('삭제 실패'); }
+  }
+
   // 🆕 과거 회차 조회
   async function handlePastFetch() {
     const r = parseInt(pastRoundInput);
@@ -1690,6 +2119,8 @@ function App() {
     e.target.value = '';
   }
 
+  // ⚠️ 손익·전략 집계는 r.games / r.matches 만 본다.
+  //    🧪 모의 실험 결과는 r.mock 에만 있으므로 아래 계산에 절대 들어오지 않는다.
   const stats = (() => {
     let totalCost = 0, totalWin = 0;
     const tiers = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
@@ -2137,6 +2568,11 @@ function App() {
                 </div>
               );
             })()}
+
+            {/* ===== 🧪 모의 실험 ===== */}
+            <MockSection saved={saved} dark={dark} card={card} text={text} textDim={textDim}
+              inputBase={inputBase} profile={mockProfile} onProfileSave={handleMockProfileSave}
+              onGen={handleMockGen} onDel={handleMockDel} busy={mockBusy} />
           </div>
         )}
 
