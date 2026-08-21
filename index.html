@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v16</title>
+  <title>로또 분석기 v17</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -102,7 +102,7 @@ function sbRow(rec, owner) {
     // 🧪 모의 실험은 extra.mock 에 통째로 실어 보낸다 (games 와 절대 섞지 않음)
     extra: {
       backtest: !!rec.backtest, recordOnly: !!rec.recordOnly,
-      mock: rec.mock || null, updatedAt: rec.updatedAt || null
+      mock: rec.mock || null, par: rec.par || null, updatedAt: rec.updatedAt || null
     }
   };
 }
@@ -119,6 +119,7 @@ function sbToRec(row) {
   if (ex.backtest) rec.backtest = true;
   if (ex.recordOnly) rec.recordOnly = true;
   if (ex.mock) rec.mock = ex.mock;
+  if (ex.par) rec.par = ex.par;
   return rec;
 }
 
@@ -192,10 +193,11 @@ const Zap = _ic([{t:'polygon',points:'13 2 3 14 12 14 11 22 21 10 12 10 13 2'}])
 const History = _ic([{d:'M3 3v5h5'},{d:'M3.05 13A9 9 0 1 0 6 5.3L3 8'},{d:'M12 7v5l4 2'}]);
 const FlaskConical = _ic([{d:'M10 2v7.31'},{d:'M14 9.3V2'},{d:'M8.5 2h7'},{d:'M14 9.3a6.5 6.5 0 1 1-4 0'},{d:'M5.52 16h12.96'}]);
 const Cpu = _ic([{t:'rect',x:4,y:4,width:16,height:16,rx:2},{t:'rect',x:9,y:9,width:6,height:6},{t:'line',x1:9,y1:1,x2:9,y2:4},{t:'line',x1:15,y1:1,x2:15,y2:4},{t:'line',x1:9,y1:20,x2:9,y2:23},{t:'line',x1:15,y1:20,x2:15,y2:23},{t:'line',x1:20,y1:9,x2:23,y2:9},{t:'line',x1:20,y1:14,x2:23,y2:14},{t:'line',x1:1,y1:9,x2:4,y2:9},{t:'line',x1:1,y1:14,x2:4,y2:14}]);
+const Link2 = _ic([{d:'M9 17H7A5 5 0 0 1 7 7h2'},{d:'M15 7h2a5 5 0 1 1 0 10h-2'},{t:'line',x1:8,y1:12,x2:16,y2:12}]);
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 16;
+const APP_VERSION = 17;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -866,7 +868,10 @@ function winProfile(rec, ft) {
 const TOP7_EXPECT = 7 * 6 / 45;
 
 // 9전략에 속하지 않는 보조 줄 (통계의 전략별 ROI 집계에는 넣지 않는다)
-const EXTRA_STRAT = { F: { name: '커버보완', emoji: '➕' } };
+const EXTRA_STRAT = {
+  F: { name: '커버보완', emoji: '➕' },
+  P: { name: '병렬조합', emoji: '🔗' }
+};
 const stratMeta = (k) => STRAT_META[k] || EXTRA_STRAT[k] || {};
 
 // ➕ 커버 보완: 아직 한 번도 안 쓴 번호를 우선 담아 줄을 만든다 (무작위 없음 · 언제 눌러도 같은 결과)
@@ -1189,6 +1194,234 @@ function rankColor(rank, dark) {
   return dark
     ? { backgroundColor: `hsl(${hue}, 50%, 27%)`, color: '#e2e8f0' }
     : { backgroundColor: `hsl(${hue}, 85%, 92%)`, color: `hsl(${hue}, 75%, 28%)` };
+}
+
+// ===== 🔗 병렬 조합 (12축 TOP2 × 3축 = 6개) =====
+// 규칙: 각 축의 순위표에서 TOP2 를 가져와 2+2+2 로 한 줄을 만든다.
+//   · 앞 축이 이미 쓴 번호와 겹치면 그 축의 다음 순위 번호로 대체한다 (항상 6개 유지, * 로 표시)
+//   · 축 순서는 AXES 의 고정 순서를 따르므로 같은 데이터면 몇 번을 눌러도 결과가 같다
+//   · 합계·저중고 같은 유효성은 참고 배지로만 보여주고 재생성하지 않는다
+const PAR_VERSION = 1;                 // 계산 로직이 바뀌면 올린다 → 백테스트 캐시 자동 무효화
+const PAR_SOLO_LINES = 5;              // 비교용 "단일 전략 줄" = 9전략 × 5줄 = 45줄
+const AXIS_SHORT = {
+  MY: '내빈도', HOT: '핫', COLD: '콜드',
+  T: '분배', C: '합의', R: '동순위', X: '보너스', Y: '미출현',
+  Z: '휴식', W: '이월', V: '끝수', U: '합계'
+};
+const axisShort = (k) => AXIS_SHORT[k] || k;
+const axisMeta = (k) => AXES.find(a => a.k === k) || { k, label: k, emoji: '' };
+
+// 12축 각각의 1~45 순위 순서 (배열 순서가 곧 순위). 재료가 없는 축은 null
+function axisOrders(eng, RANKS, ft) {
+  const ALL = Array.from({ length: 45 }, (_, i) => i + 1);
+  const ord = {};
+  for (const k of Object.keys(RANKS)) ord[k] = RANKS[k].map(r => r.n);
+  ord.HOT = ALL.slice().sort((a, b) => eng.freq[b] - eng.freq[a] || a - b);
+  ord.COLD = ALL.slice().sort((a, b) =>
+    Math.min(eng.lastSeen[b], eng.rounds) - Math.min(eng.lastSeen[a], eng.rounds) || a - b);
+  // 📊 내 빈도 = 그 회차에 저장된 줄들의 빈도표. 줄이 하나도 없으면 이 축은 못 쓴다
+  ord.MY = (ft && ft.lines > 0) ? ft.rows.map(r => r.n) : null;
+  return ord;
+}
+
+// 쓸 수 있는 축 키 목록 (AXES 고정 순서 유지)
+function axisKeys(ord) {
+  return AXES.map(a => a.k).filter(k => Array.isArray(ord[k]) && ord[k].length === 45);
+}
+
+// 축 3개 → 한 줄. 겹치면 다음 순위로 밀어 항상 6개를 채운다
+function parallelLine(trio, ord) {
+  const used = [], parts = [];
+  for (const k of trio) {
+    const list = ord[k];
+    if (!list) return null;
+    const nums = [], subs = [];
+    for (let i = 0; i < list.length && nums.length < 2; i++) {
+      const n = list[i];
+      if (used.indexOf(n) >= 0) continue;
+      nums.push(n);
+      if (i >= 2) subs.push(n);              // TOP2 자리를 벗어나 끌어온 번호
+    }
+    if (nums.length < 2) return null;
+    nums.forEach(n => used.push(n));
+    parts.push({ k, nums, subs });
+  }
+  if (used.length !== 6) return null;
+  const label = parts.map(p =>
+    `${axisShort(p.k)}(${p.nums.map(n => n + (p.subs.indexOf(n) >= 0 ? '*' : '')).join(',')})`
+  ).join('+');
+  return {
+    numbers: used.slice().sort((a, b) => a - b),
+    axes: trio.slice(),
+    parts, label,
+    substituted: parts.some(p => p.subs.length > 0)
+  };
+}
+
+// 축 3개 조합 전체 = C(축수, 3) 줄
+function parallelAll(ord, keys) {
+  const out = [];
+  for (let a = 0; a < keys.length; a++)
+    for (let b = a + 1; b < keys.length; b++)
+      for (let c = b + 1; c < keys.length; c++) {
+        const line = parallelLine([keys[a], keys[b], keys[c]], ord);
+        if (line) out.push(line);
+      }
+  return out;
+}
+
+// 조합 묶음 채점 — 3개 이상 적중 줄 수 / 최고 적중
+function gradePool(combos, winNumbers, bonus) {
+  const win = {};
+  winNumbers.forEach(n => { win[n] = 1; });
+  const hasB = (bonus >= 1 && bonus <= 45);
+  const dist = [0, 0, 0, 0, 0, 0, 0];
+  const uniq = {};
+  let best = null;
+  combos.forEach((c, i) => {
+    let m = 0;
+    for (const n of c) if (win[n]) m++;
+    dist[m]++;
+    uniq[c.join(',')] = 1;
+    const b = hasB && c.indexOf(bonus) >= 0;
+    if (!best || m > best.hits || (m === best.hits && b && !best.bonus))
+      best = { idx: i + 1, hits: m, numbers: c, bonus: b };
+  });
+  const games = combos.length;
+  const hit3 = dist[3] + dist[4] + dist[5] + dist[6];
+  if (best) best.label = best.hits === 6 ? '6개'
+    : (best.hits === 5 && best.bonus) ? '5개+보' : `${best.hits}개${best.bonus ? '+보' : ''}`;
+  return { games, unique: Object.keys(uniq).length, dist, hit3, rate: games ? hit3 / games : 0, best };
+}
+
+// 한 회차 소급 검증 — 그 회차 "직전 데이터"만으로 병렬 전체 줄 vs 단일 전략 45줄을 비교한다
+// ⚠️ 미래 정보 차단: priorHist 는 반드시 rec.round 보다 앞선 회차들만 넘긴다
+function parBacktestRound(rec, priorHist) {
+  const eng = computeEngine(priorHist);
+  const S = buildStrategies(eng);
+  const built = buildRankings(eng, S);
+  const ft = freqTable(rec);
+  const ord = axisOrders(eng, built.ranks, ft);
+  const keys = axisKeys(ord);
+  const par = parallelAll(ord, keys);
+  const solo = [];
+  for (const k of DISPLAY_ORDER)
+    for (let i = 1; i <= PAR_SOLO_LINES; i++) {
+      const l = buildLine(k, i, built.ranks, built.anti);
+      if (l) solo.push(l.numbers);
+    }
+  return {
+    round: rec.round, base: eng.baseRange, axes: keys.length, lines: ft.lines,
+    myAxis: !!ord.MY,
+    par: gradePool(par.map(p => p.numbers), rec.winNumbers, rec.bonus),
+    solo: gradePool(solo, rec.winNumbers, rec.bonus)
+  };
+}
+
+// ===== 🔗 병렬 결과 · 매칭 탭 하단 (모의 실험 이력의 "병렬" 카테고리) =====
+function ParSection({ saved, dark, card, textDim, onDel }) {
+  const hist = useMemo(() => (saved || [])
+    .filter(r => r && r.par && Array.isArray(r.par.combos) && r.par.combos.length > 0)
+    .sort((a, b) => b.round - a.round)
+    .map(r => ({
+      round: r.round, rec: r, par: r.par,
+      stale: !!(r.par.myAxis && r.par.srcLines !== (r.games || []).length),
+      score: (Array.isArray(r.winNumbers) && r.winNumbers.length === 6)
+        ? gradePool(r.par.combos, r.winNumbers, r.bonus) : null
+    })), [saved]);
+
+  const scored = hist.filter(h => h.score);
+  const sum = scored.length > 0 ? {
+    rounds: scored.length,
+    games: scored.reduce((s, h) => s + h.score.games, 0),
+    hit3: scored.reduce((s, h) => s + h.score.hit3, 0),
+    best: scored.reduce((m, h) => Math.max(m, h.score.best ? h.score.best.hits : 0), 0)
+  } : null;
+  if (sum) sum.expect = sum.games * MOCK_P3;
+
+  const soft = dark ? 'bg-slate-700/50' : 'bg-slate-50';
+  const line = dark ? 'border-slate-700' : 'border-slate-200';
+  const tone = (ratio) => ratio >= 1.5 ? 'text-orange-500' : (ratio <= 0.5 ? 'text-blue-500' : textDim);
+
+  return (
+    <div className={`${card} rounded-2xl shadow-md p-4 border-2 ${dark ? 'border-fuchsia-900' : 'border-fuchsia-200'}`}>
+      <div className="font-bold mb-1 flex items-center gap-2">
+        <Link2 className="w-4 h-4 text-fuchsia-500" /> 🔗 병렬 조합 결과
+      </div>
+      <div className={`text-[11px] ${textDim} mb-3 leading-relaxed`}>
+        모의 실험 이력의 <strong>병렬 카테고리</strong>입니다. 자동 생성한 전체 축 조합 줄을 따로 누적 집계하며
+        <strong> 실구매 기록·손익 통계와 섞이지 않습니다</strong>.
+      </div>
+
+      {hist.length === 0 ? (
+        <div className={`${dark ? 'bg-amber-900/30 text-amber-200' : 'bg-amber-50 text-amber-900'} rounded-xl p-3 text-xs leading-relaxed`}>
+          아직 자동 생성한 병렬 줄이 없습니다. 생성 탭의 <strong>🔗 병렬 조합</strong>에서 [자동 전체 생성]을 눌러 주세요.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {hist.map(h => (
+            <div key={h.round} className={`${soft} rounded-xl px-3 py-2`}>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-sm w-14 shrink-0">{h.round}회</span>
+                <span className={`text-[11px] ${textDim}`}>
+                  {h.par.axes}축 · {h.par.combos.length}줄
+                  {h.score && h.score.unique < h.score.games ? ` (고유 ${h.score.unique})` : ''}
+                  {h.par.substituted ? ' · 대체 있음' : ''}
+                </span>
+                <button onClick={() => onDel(h.round)} className={`ml-auto text-[11px] ${textDim} active:scale-95`}>삭제</button>
+              </div>
+              {h.stale && (
+                <div className={`text-[11px] mt-1 font-semibold ${dark ? 'text-amber-300' : 'text-amber-700'}`}>
+                  ⚠️ 생성 이후 이 회차 줄이 {h.par.srcLines} → {(h.rec.games || []).length}줄로 바뀌어
+                  📊 내 빈도 축이 달라졌습니다. 다시 생성하세요.
+                </div>
+              )}
+              {!h.score ? (
+                <div className={`text-[11px] ${textDim} mt-1`}>추첨 후 이 회차를 매칭하면 자동으로 채점됩니다.</div>
+              ) : (
+                <div className="mt-1.5">
+                  <div className="flex items-baseline gap-2">
+                    <span className={`text-xl font-bold ${tone(h.score.hit3 / (h.score.games * MOCK_P3))}`}>{h.score.hit3}</span>
+                    <span className={`text-[11px] ${textDim}`}>
+                      줄 3개 이상 · 기대치 {(h.score.games * MOCK_P3).toFixed(1)} · 최고 {h.score.best ? h.score.best.label : '-'}
+                    </span>
+                  </div>
+                  <div className={`text-[11px] ${textDim} mt-0.5`}>
+                    적중 분포 — {[6, 5, 4, 3].map(k => `${k}개 ${h.score.dist[k]}`).join(' · ')}
+                  </div>
+                  {h.score.best && h.score.best.hits >= 3 && (
+                    <div className="mt-1">
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {h.score.best.numbers.map(n => (
+                          <Ball key={n} n={n} sm
+                            hit={h.rec.winNumbers.indexOf(n) >= 0}
+                            bonus={h.rec.bonus === n} />
+                        ))}
+                      </div>
+                      {h.par.labels && h.par.labels[h.score.best.idx - 1] && (
+                        <div className={`text-[10px] ${textDim} mt-0.5`}>출처 {h.par.labels[h.score.best.idx - 1]}</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {sum && (
+        <div className={`text-[11px] ${textDim} mt-3 pt-3 border-t ${line} leading-relaxed`}>
+          <strong>병렬 누적</strong> — {sum.rounds}회 · {sum.games.toLocaleString()}줄 중 3개 이상{' '}
+          <strong>{sum.hit3}</strong>줄 (기대치 {sum.expect.toFixed(1)}) →{' '}
+          <strong className={tone(sum.hit3 / sum.expect)}>
+            기대치의 {sum.expect > 0 ? (sum.hit3 / sum.expect * 100).toFixed(0) : 0}%
+          </strong>
+          {' '}· 역대 최고 {sum.best}개 — 회차가 쌓일수록 이 규칙의 장기 성적이 드러납니다.
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ===== 📊 빈도 분석 패널 (저장 탭 회차 카드 안) =====
@@ -1619,6 +1852,12 @@ function App() {
   const [mockBusy, setMockBusy] = useState(false);
   const [mockMode, setMockMode] = useState('auto');            // 'auto' = 직전 회차에서 자동 계산
   const [mockRanks, setMockRanks] = useState([6, 15, 26, 26, 43, 43]);   // 수동 고정용 순위
+  // 🆕 🔗 병렬 조합 (12축 TOP2 × 3축)
+  const [parBusy, setParBusy] = useState(false);
+  const [parSel, setParSel] = useState([]);            // 수동 생성용으로 고른 축 3개
+  const [parOpen, setParOpen] = useState(false);       // 축별 TOP2 펼치기
+  const [parRows, setParRows] = useState([]);          // 소급 백테스트 결과 (통계 탭)
+  const [parBt, setParBt] = useState({ busy: false, done: 0, total: 0 });
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [latestVer, setLatestVer] = useState(null);
   // 🆕 통계 탭 · 전략별 선호 순위
@@ -1647,6 +1886,17 @@ function App() {
 
   // 🆕 v13: 9전략의 1~45번 순위표 (생성·통계가 같은 표를 쓴다)
   const { ranks: RANKS, anti: ANTI } = useMemo(() => buildRankings(engine, STRATEGIES), [engine, STRATEGIES]);
+
+  // 🔗 병렬 조합 — 12축의 1~45 순위 순서 (📊 내 빈도는 이번 회차에 저장된 줄에서 계산)
+  const parOrd = useMemo(() => {
+    const cur = saved.find(r => r.round === round);
+    return axisOrders(engine, RANKS, cur ? freqTable(cur) : null);
+  }, [engine, RANKS, saved, round]);
+  const parKeys = useMemo(() => axisKeys(parOrd), [parOrd]);
+  // 수동 선택은 화면에서 누른 순서와 무관하게 AXES 고정 순서로 정렬해 결과를 항상 같게 만든다
+  const parTrio = useMemo(() => AXES.map(a => a.k).filter(k => parSel.indexOf(k) >= 0), [parSel]);
+  const parPreview = useMemo(() =>
+    (parTrio.length === 3) ? parallelLine(parTrio, parOrd) : null, [parTrio, parOrd]);
 
   // 통계 탭: 선택한 전략의 순위 + "5줄 뽑으면 몇 줄에 들어가나"
   const prefRank = useMemo(() => {
@@ -1687,6 +1937,76 @@ function App() {
       deadRounds: rows.filter(x => x.missing.length > 0).length
     };
   }, [tab, saved]);
+
+  // 🔗 병렬 백테스트 대상 — 매칭된(당첨번호가 있는) 회차 전체.
+  //    직전 데이터가 5회 미만이면 엔진이 시드값으로 보완해 미래 정보가 섞이므로 제외한다.
+  const parTargets = useMemo(() => {
+    const hist = saved
+      .filter(r => Array.isArray(r.winNumbers) && r.winNumbers.length === 6)
+      .map(r => ({ round: r.round, nums: r.winNumbers, bonus: r.bonus }));
+    return saved
+      .filter(r => Array.isArray(r.winNumbers) && r.winNumbers.length === 6)
+      .sort((a, b) => b.round - a.round)
+      .map(rec => ({ rec, prior: hist.filter(h => h.round < rec.round) }))
+      .filter(x => x.prior.length >= 5);
+  }, [saved]);
+
+  const parSig = (t) =>
+    `${PAR_VERSION}|${t.prior.length}|${Math.max.apply(null, t.prior.map(h => h.round))}|${(t.rec.games || []).length}`;
+
+  // 탭을 열면 이미 계산해 둔 결과만 즉시 읽어 온다 (무거운 계산은 버튼으로)
+  useEffect(() => {
+    if (tab !== 'stats') return;
+    let cancelled = false;
+    (async () => {
+      const rows = [];
+      for (const t of parTargets) {
+        try {
+          const c = await window.storage.get(`pbt:${t.rec.round}`);
+          if (c && c.value) { const o = JSON.parse(c.value); if (o.sig === parSig(t)) rows.push(o.row); }
+        } catch (e) {}
+      }
+      if (!cancelled) setParRows(rows);
+    })();
+    return () => { cancelled = true; };
+  }, [tab, parTargets]);
+
+  // 아직 계산 안 된 회차만 이어서 계산 (한 회차씩 양보하며 돌려 화면이 멈추지 않게)
+  async function runParBacktest() {
+    if (parBt.busy) return;
+    const done = {};
+    parRows.forEach(r => { done[r.round] = r; });
+    const todo = parTargets.filter(t => !done[t.rec.round]);
+    if (todo.length === 0) { showToast('이미 모두 계산되어 있습니다'); return; }
+    setParBt({ busy: true, done: 0, total: todo.length });
+    const rows = parRows.slice();
+    for (let i = 0; i < todo.length; i++) {
+      const t = todo[i];
+      try {
+        const row = parBacktestRound(t.rec, t.prior);
+        rows.push(row);
+        try { await window.storage.set(`pbt:${t.rec.round}`, JSON.stringify({ sig: parSig(t), row })); } catch (e) {}
+      } catch (e) {}
+      setParBt({ busy: true, done: i + 1, total: todo.length });
+      setParRows(rows.slice().sort((a, b) => b.round - a.round));
+      await new Promise(rs => setTimeout(rs, 0));
+    }
+    setParBt({ busy: false, done: 0, total: 0 });
+    showToast(`🔗 병렬 백테스트 ${todo.length}회차 완료`);
+  }
+
+  // 비교 합계 — 3개 이상 적중 "비율"로 비교한다 (줄 수가 다르므로 개수 비교는 무의미)
+  const parCmp = useMemo(() => {
+    if (parRows.length === 0) return null;
+    const acc = (key) => {
+      const games = parRows.reduce((s, r) => s + r[key].games, 0);
+      const hit3 = parRows.reduce((s, r) => s + r[key].hit3, 0);
+      const best = parRows.reduce((m, r) => Math.max(m, r[key].best ? r[key].best.hits : 0), 0);
+      const unique = parRows.reduce((s, r) => s + (r[key].unique || 0), 0);
+      return { games, unique, hit3, rate: games ? hit3 / games : 0, best };
+    };
+    return { rounds: parRows.length, par: acc('par'), solo: acc('solo') };
+  }, [parRows]);
 
   // 🆕 [C] 리더보드 계산 — 무거우므로 회차별로 1회만 계산하고 localStorage 에 저장해 재사용
   useEffect(() => {
@@ -1996,6 +2316,7 @@ function App() {
     try {
       await window.storage.delete(`round:${round}`);
       await window.storage.delete(`lb:${round}`);
+      await window.storage.delete(`pbt:${round}`);
       sbQueueDel([round]);
       sbDeleteRound(round);
       showToast('초기화'); await loadAll();
@@ -2007,6 +2328,7 @@ function App() {
     try {
       await window.storage.delete(`round:${rd}`);
       await window.storage.delete(`lb:${rd}`);
+      await window.storage.delete(`pbt:${rd}`);
       sbQueueDel([rd]);
       sbDeleteRound(rd);
       showToast('삭제'); await loadAll();
@@ -2119,6 +2441,72 @@ function App() {
     try {
       await saveRound(t);
       showToast('가상 게임 삭제');
+      await loadAll();
+    } catch (e) { showToast('삭제 실패'); }
+  }
+
+  // 🔗 병렬 조합 — ⓐ 자동: 축 3개 조합 전체를 한 번에 만든다 (C(12,3)=220줄)
+  //    줄이 220개라 실구매 50줄 한도에 넣지 않고 rec.par 에만 저장한다 → 손익 통계와 섞이지 않는다
+  async function handleParAuto() {
+    if (parBusy) return;
+    if (parKeys.length < 3) { showToast('쓸 수 있는 축이 3개 미만입니다'); return; }
+    const lines = parallelAll(parOrd, parKeys);
+    if (lines.length === 0) { showToast('병렬 조합 생성 실패'); return; }
+    const cur = saved.find(r => r.round === round);
+    if (cur && cur.par && !confirm(`${round}회 병렬 ${cur.par.combos.length}줄이 이미 있습니다. 다시 만들까요?`)) return;
+    setParBusy(true);
+    const data = cur || { round, date: new Date().toISOString().split('T')[0], games: [], winNumbers: null, bonus: null, matches: null };
+    data.par = {
+      isPar: true,
+      createdAt: new Date().toISOString(),
+      axes: parKeys.length,
+      axisKeys: parKeys.slice(),
+      myAxis: !!parOrd.MY,
+      srcLines: (data.games || []).length,
+      substituted: lines.some(l => l.substituted),
+      combos: lines.map(l => l.numbers),
+      labels: lines.map(l => l.label),
+      unique: Object.keys(lines.reduce((a, l) => { a[l.numbers.join(',')] = 1; return a; }, {})).length
+    };
+    try {
+      await saveRound(data);
+      showToast(`🔗 병렬 ${lines.length}줄 생성 (C(${parKeys.length},3) · 고유 ${data.par.unique}조합)`);
+      await loadAll();
+    } catch (e) { showToast('저장 실패'); }
+    setParBusy(false);
+  }
+
+  // 🔗 병렬 조합 — ⓑ 수동: 고른 축 3개로 1줄. 이건 실제로 살 줄이라 games 에 넣는다
+  async function handleParManual() {
+    if (parBusy || generating) return;
+    if (!parPreview) { showToast('축 3개를 골라 주세요'); return; }
+    const cur = saved.find(r => r.round === round);
+    const count = cur ? cur.games.length : 0;
+    if (count >= MAX_LINES) { showToast('이미 50줄 가득'); return; }
+    setParBusy(true);
+    const data = cur || { round, date: new Date().toISOString().split('T')[0], games: [], winNumbers: null, bonus: null, matches: null };
+    const id = data.games.length > 0 ? Math.max.apply(null, data.games.map(g => g.id)) + 1 : 1;
+    data.games = data.games.concat([{
+      id, strategy: 'P', numbers: parPreview.numbers,
+      reason: `병렬 · ${parPreview.label}${parPreview.substituted ? ' (* = 겹쳐서 다음 순위로 대체)' : ''}`
+    }]);
+    data.matches = null;
+    try {
+      await saveRound(data);
+      showToast(`🔗 병렬 1줄 추가 (${data.games.length}/${MAX_LINES})`);
+      await loadAll();
+    } catch (e) { showToast('저장 실패'); }
+    setParBusy(false);
+  }
+
+  async function handleParDel(rd) {
+    const t = saved.find(r => r.round === rd);
+    if (!t || !t.par) return;
+    if (!confirm(`${rd}회 병렬 줄을 지울까요? (실제로 저장한 줄은 그대로 남습니다)`)) return;
+    delete t.par;
+    try {
+      await saveRound(t);
+      showToast('병렬 줄 삭제');
       await loadAll();
     } catch (e) { showToast('삭제 실패'); }
   }
@@ -2404,6 +2792,113 @@ function App() {
               </div>
             )}
 
+            {/* 🆕 🔗 병렬 조합 (12축 TOP2 × 3축 = 6개) */}
+            <div className={`${card} rounded-2xl shadow-md p-4 border-2 ${dark ? 'border-fuchsia-900' : 'border-fuchsia-200'}`}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="font-bold text-sm flex items-center gap-2">
+                  <Link2 className="w-4 h-4 text-fuchsia-500" /> 🔗 병렬 조합
+                </div>
+                <span className={`text-[11px] ${textDim}`}>{parKeys.length}축 사용 가능</span>
+              </div>
+              <div className={`text-[11px] ${textDim} leading-relaxed mb-3`}>
+                축마다 <strong>TOP2</strong>를 뽑아 <strong>축 3개 × 2개 = 6개</strong>로 한 줄을 만듭니다.
+                번호가 겹치면 그 축의 <strong>다음 순위</strong>로 대체해(<strong>*</strong> 표시) 항상 6개를 채우고,
+                합계 같은 유효성은 <strong>참고 배지</strong>로만 보여줍니다(재생성 없음).
+              </div>
+
+              {!parOrd.MY && (
+                <div className={`text-[11px] leading-relaxed rounded-xl px-3 py-2 mb-3 ${dark ? 'bg-amber-900/30 text-amber-200' : 'bg-amber-50 text-amber-800'}`}>
+                  ⚠️ 📊 <strong>내 빈도</strong> 축은 이번 회차에 저장된 줄에서 계산합니다.
+                  아직 줄이 없어 <strong>{parKeys.length}축</strong>만 쓰며 자동 생성은 C({parKeys.length},3)=
+                  <strong>{parKeys.length >= 3 ? (parKeys.length * (parKeys.length - 1) * (parKeys.length - 2) / 6) : 0}줄</strong>이 됩니다.
+                </div>
+              )}
+
+              {/* 축별 TOP2 */}
+              <button onClick={() => setParOpen(!parOpen)}
+                className={`w-full py-2 rounded-xl text-xs font-bold active:scale-95 ${dark ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-700'}`}>
+                축별 TOP2 보기 {parOpen ? '▲' : '▼'}
+              </button>
+              {parOpen && (
+                <div className="space-y-1 mt-2">
+                  {parKeys.map(k => (
+                    <div key={k} className={`flex items-center gap-2 py-1.5 px-2 rounded-lg ${dark ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
+                      <span className="text-xs font-semibold w-20 shrink-0">{axisMeta(k).emoji} {axisMeta(k).label}</span>
+                      <div className="flex gap-1">
+                        {parOrd[k].slice(0, 2).map(n => <Ball key={n} n={n} sm />)}
+                      </div>
+                      <span className={`text-[10px] ${textDim} ml-auto`}>다음 {parOrd[k].slice(2, 5).join('·')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ⓐ 자동 — 축 3개 조합 전체 */}
+              <div className={`mt-3 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
+                <div className="text-xs font-bold mb-1">ⓐ 자동 — 축 3개 조합 전체</div>
+                <div className={`text-[11px] ${textDim} mb-2 leading-relaxed`}>
+                  C({parKeys.length},3) = <strong>{parKeys.length >= 3 ? (parKeys.length * (parKeys.length - 1) * (parKeys.length - 2) / 6) : 0}줄</strong>.
+                  50줄 한도를 훨씬 넘으므로 <strong>실구매 줄이 아니라 검증용</strong>으로 따로 저장하고,
+                  매칭 탭 <strong>병렬 카테고리</strong>에서 누적 집계합니다 (손익 통계와 섞이지 않음).
+                </div>
+                <button onClick={handleParAuto} disabled={parBusy || parKeys.length < 3}
+                  className="w-full bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1 active:scale-95 disabled:opacity-50">
+                  {parBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+                  자동 전체 생성 ({parKeys.length >= 3 ? (parKeys.length * (parKeys.length - 1) * (parKeys.length - 2) / 6) : 0}줄)
+                </button>
+                {currentRound && currentRound.par && (
+                  <div className={`text-[11px] ${textDim} mt-1.5`}>
+                    ✓ {round}회 병렬 <strong>{currentRound.par.combos.length}줄</strong> 저장됨
+                    ({currentRound.par.axes}축{currentRound.par.unique ? ` · 고유 ${currentRound.par.unique}조합` : ''}{currentRound.par.substituted ? ' · 대체 있음' : ''})
+                  </div>
+                )}
+              </div>
+
+              {/* ⓑ 수동 — 축 3개 직접 선택 */}
+              <div className={`mt-3 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
+                <div className="text-xs font-bold mb-1">ⓑ 수동 — 축 3개 직접 선택 ({parSel.length}/3)</div>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {parKeys.map(k => {
+                    const on = parSel.indexOf(k) >= 0;
+                    return (
+                      <button key={k} onClick={() => {
+                        if (!on && parSel.length >= 3) showToast('축은 3개까지 고를 수 있습니다');
+                        setParSel(prev => {
+                          if (prev.indexOf(k) >= 0) return prev.filter(x => x !== k);
+                          return prev.length >= 3 ? prev : prev.concat([k]);
+                        });
+                      }}
+                        className={`text-[11px] px-2 py-1 rounded-full font-semibold border-2 active:scale-95 ${on
+                          ? 'border-fuchsia-500 text-fuchsia-600'
+                          : (dark ? 'border-slate-600 text-slate-400' : 'border-slate-200 text-slate-500')}`}>
+                        {axisMeta(k).emoji} {axisShort(k)}
+                      </button>
+                    );
+                  })}
+                </div>
+                {parPreview ? (
+                  <div className={`rounded-xl p-3 ${dark ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
+                    <div className="flex gap-1 flex-wrap">
+                      {parPreview.numbers.map(n => <Ball key={n} n={n} />)}
+                    </div>
+                    <div className={`text-[11px] mt-1.5 font-semibold ${dark ? 'text-fuchsia-300' : 'text-fuchsia-700'}`}>
+                      출처 {parPreview.label}
+                    </div>
+                    {parPreview.substituted && (
+                      <div className={`text-[10px] ${textDim} mt-0.5`}>* = 앞 축과 겹쳐 다음 순위로 대체된 번호</div>
+                    )}
+                    <CheckBadges nums={parPreview.numbers} dark={dark} />
+                    <button onClick={handleParManual} disabled={parBusy || remaining <= 0}
+                      className="w-full mt-2 bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white py-2 rounded-lg text-sm font-bold active:scale-95 disabled:opacity-50">
+                      이 조합으로 1줄 저장
+                    </button>
+                  </div>
+                ) : (
+                  <div className={`text-[11px] ${textDim}`}>축을 3개 고르면 한 줄이 바로 만들어집니다.</div>
+                )}
+              </div>
+            </div>
+
             {/* 🆕 [A] 커버 체크 + 집중도 알림 */}
             {coverInfo && (
               <div className={`${card} rounded-2xl shadow-md p-4`}>
@@ -2487,6 +2982,7 @@ function App() {
                           {r.round}회차
                           {r.backtest && <span className="text-xs bg-purple-500 text-white px-2 py-0.5 rounded-full font-normal">백테스트</span>}
                           {r.recordOnly && <span className="text-xs bg-slate-500 text-white px-2 py-0.5 rounded-full font-normal">기록</span>}
+                          {r.par && <span className="text-xs bg-fuchsia-500 text-white px-2 py-0.5 rounded-full font-normal">🔗 병렬 {r.par.combos.length}</span>}
                         </div>
                         <div className={`text-xs ${textDim}`}>{r.date} · {r.games.length}줄</div>
                       </div>
@@ -2672,6 +3168,9 @@ function App() {
             <MockSection saved={saved} dark={dark} card={card} text={text} textDim={textDim}
               inputBase={inputBase} mode={mockMode} manualRanks={mockRanks} onModeSave={handleMockModeSave}
               onGen={handleMockGen} onDel={handleMockDel} busy={mockBusy} />
+
+            {/* ===== 🔗 병렬 조합 결과 (모의 실험 이력의 병렬 카테고리) ===== */}
+            <ParSection saved={saved} dark={dark} card={card} textDim={textDim} onDel={handleParDel} />
           </div>
         )}
 
@@ -2946,6 +3445,125 @@ function App() {
               </div>
             )}
 
+            {/* 🆕 🔗 병렬 vs 단일 전략 소급 백테스트 */}
+            <div className={`${card} rounded-2xl shadow-md p-4`}>
+              <div className="text-sm font-bold flex items-center gap-2">
+                <Link2 className="w-4 h-4 text-fuchsia-500" /> 🔗 병렬 vs 단일 전략 백테스트
+              </div>
+              <div className={`text-[11px] ${textDim} mt-1 mb-3 leading-relaxed`}>
+                매칭된 과거 회차 전체에 <strong>그 회차 직전 데이터만으로</strong> 두 방식을 소급 적용해
+                <strong> 3개 이상 적중 비율</strong>과 <strong>최고 적중</strong>을 비교합니다 (미래 정보 차단).
+                <br />병렬 = 축 3개 조합 전체 · 단일 = 9전략 × {PAR_SOLO_LINES}줄 = {DISPLAY_ORDER.length * PAR_SOLO_LINES}줄.
+                줄 수가 다르므로 <strong>개수가 아니라 비율</strong>로 비교합니다.
+              </div>
+
+              {parTargets.length === 0 ? (
+                <div className={`text-[11px] ${textDim}`}>
+                  직전 데이터가 5회 이상 쌓인 매칭 회차가 없습니다. 매칭 탭에서 과거 회차를 더 저장해 주세요.
+                </div>
+              ) : (
+                <>
+                  <button onClick={runParBacktest} disabled={parBt.busy || parRows.length >= parTargets.length}
+                    className="w-full bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1 active:scale-95 disabled:opacity-50">
+                    {parBt.busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />}
+                    {parBt.busy
+                      ? `계산 중 ${parBt.done}/${parBt.total}`
+                      : (parRows.length >= parTargets.length
+                        ? `계산 완료 (${parRows.length}회차)`
+                        : `백테스트 실행 (남은 ${parTargets.length - parRows.length}회차)`)}
+                  </button>
+                  {parBt.busy && (
+                    <div className={`h-1.5 rounded-full mt-2 ${dark ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                      <div className="h-full rounded-full bg-fuchsia-500 transition-all"
+                        style={{ width: `${parBt.total ? (parBt.done / parBt.total) * 100 : 0}%` }} />
+                    </div>
+                  )}
+                  <div className={`text-[10px] ${textDim} mt-1.5`}>
+                    회차마다 순위표를 새로 만들어 계산이 무겁습니다. 결과는 기기에 저장돼 다음엔 바로 뜹니다.
+                  </div>
+                </>
+              )}
+
+              {parCmp && (
+                <>
+                  <div className={`grid grid-cols-2 gap-2 mt-3 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
+                    {[
+                      { key: 'par', name: '🔗 병렬', tint: dark ? 'bg-fuchsia-900/30' : 'bg-fuchsia-50' },
+                      { key: 'solo', name: '📐 단일 전략', tint: dark ? 'bg-slate-700/40' : 'bg-slate-50' }
+                    ].map(c => {
+                      const v = parCmp[c.key];
+                      const other = parCmp[c.key === 'par' ? 'solo' : 'par'];
+                      return (
+                        <div key={c.key} className={`rounded-xl p-3 ${c.tint}`}>
+                          <div className="text-[11px] font-bold">{c.name}</div>
+                          <div className={`text-2xl font-bold mt-0.5 ${v.rate > other.rate ? 'text-fuchsia-500' : ''}`}>
+                            {(v.rate * 100).toFixed(2)}%
+                          </div>
+                          <div className={`text-[10px] ${textDim}`}>3개↑ {v.hit3} / {v.games.toLocaleString()}줄</div>
+                          <div className={`text-[10px] ${textDim}`}>고유 조합 {v.unique.toLocaleString()}</div>
+                          <div className={`text-[10px] ${textDim} mt-0.5`}>최고 적중 {v.best}개</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className={`text-[11px] mt-2 leading-relaxed rounded-xl px-3 py-2 ${dark ? 'bg-slate-700/40 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+                    축 조합이 달라도 대체 과정에서 같은 6개가 나올 수 있어 <strong>고유 조합 수는 줄 수보다 적습니다</strong>.
+                    무작위 한 줄이 3개 이상 맞을 확률은 <strong>{(MOCK_P3 * 100).toFixed(2)}%</strong>입니다.
+                    두 방식 모두 이 값 근처면 <strong>차이가 없다는 뜻</strong>이고, {parCmp.rounds}회차 표본은
+                    작아서 순위가 뒤집힐 수 있습니다.
+                  </div>
+
+                  <div className="overflow-x-auto no-scrollbar mt-3">
+                    <table className="w-full text-[11px] whitespace-nowrap">
+                      <thead>
+                        <tr className={textDim}>
+                          <th className="py-1 px-1 text-left font-semibold">회차</th>
+                          <th className="py-1 px-1 font-semibold">축</th>
+                          <th className="py-1 px-1 font-semibold" colSpan={3}>🔗 병렬</th>
+                          <th className="py-1 px-1 font-semibold" colSpan={3}>📐 단일</th>
+                        </tr>
+                        <tr className={textDim}>
+                          <th /><th />
+                          <th className="py-1 px-1 font-normal">줄</th>
+                          <th className="py-1 px-1 font-normal">3개↑</th>
+                          <th className="py-1 px-1 font-normal">최고</th>
+                          <th className="py-1 px-1 font-normal">줄</th>
+                          <th className="py-1 px-1 font-normal">3개↑</th>
+                          <th className="py-1 px-1 font-normal">최고</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {parRows.map(r => {
+                          const win = r.par.rate > r.solo.rate;
+                          return (
+                            <tr key={r.round} className={`border-t ${dark ? 'border-slate-700' : 'border-slate-100'}`}>
+                              <td className="py-1.5 px-1 font-semibold text-left">{r.round}회</td>
+                              <td className={`py-1.5 px-1 text-center ${textDim}`}>{r.axes}</td>
+                              <td className={`py-1.5 px-1 text-center ${textDim}`}>{r.par.games}</td>
+                              <td className={`py-1.5 px-1 text-center font-bold ${win ? 'text-fuchsia-500' : ''}`}>
+                                {r.par.hit3}<span className={`font-normal ${textDim}`}> ({(r.par.rate * 100).toFixed(1)}%)</span>
+                              </td>
+                              <td className="py-1.5 px-1 text-center font-semibold">{r.par.best ? r.par.best.label : '-'}</td>
+                              <td className={`py-1.5 px-1 text-center ${textDim}`}>{r.solo.games}</td>
+                              <td className={`py-1.5 px-1 text-center font-bold ${!win && r.solo.rate > r.par.rate ? 'text-emerald-500' : ''}`}>
+                                {r.solo.hit3}<span className={`font-normal ${textDim}`}> ({(r.solo.rate * 100).toFixed(1)}%)</span>
+                              </td>
+                              <td className="py-1.5 px-1 text-center font-semibold">{r.solo.best ? r.solo.best.label : '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {parRows.some(r => !r.myAxis) && (
+                    <div className={`text-[10px] ${textDim} mt-1.5`}>
+                      ※ 축 수가 11인 회차는 저장된 줄이 없어 📊 내 빈도 축을 쓰지 못한 회차입니다 (C(11,3)=165줄).
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
             {/* 🆕 화면3 · 역대 순위 프로필 */}
             {rankProfile && (
               <div className={`${card} rounded-2xl shadow-md p-4`}>
@@ -3011,6 +3629,10 @@ function App() {
 
             <div className={`${card} rounded-2xl shadow-md p-4`}>
               <div className="text-sm font-bold mb-3">9전략 가이드</div>
+              <div className={`text-[11px] leading-relaxed rounded-xl px-3 py-2 mb-3 ${dark ? 'bg-fuchsia-900/25 text-fuchsia-200' : 'bg-fuchsia-50 text-fuchsia-800'}`}>
+                🔗 <strong>병렬 조합</strong>은 아래 9전략에 <strong>📊 내 빈도 · 🔥 핫넘버 · 🧊 콜드넘버</strong>를 더한 12축에서
+                각 TOP2 를 뽑아 축 3개(2+2+2)로 한 줄을 만드는 방식입니다. 생성 탭에서 만들 수 있습니다.
+              </div>
               <div className="space-y-1.5 text-xs">
                 {Object.entries(STRATEGIES).map(([k, s]) => (
                   <div key={k} className={`flex items-start gap-2 py-1.5 border-b ${dark ? 'border-slate-700' : 'border-slate-100'} last:border-0`}>
@@ -3181,7 +3803,7 @@ function App() {
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
               <div className="font-bold mb-1 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> 안내</div>
               <p className="leading-relaxed">로또는 무작위 추첨, 어떤 분석도 당첨 보장 안 됨. 통계 참고용 (1336 도박상담).</p>
-              <p className="mt-2 font-semibold">v13 · 2026.8.5 · 랜덤 제거·순위 기반 생성 + 합의/동순위 전략 추가</p>
+              <p className="mt-2 font-semibold">v17 · 2026.8.21 · 🔗 병렬 조합(12축 TOP2 × 3축) + 병렬 vs 단일 백테스트 추가</p>
             </div>
           </div>
         )}
