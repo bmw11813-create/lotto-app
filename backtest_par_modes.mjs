@@ -71,7 +71,9 @@ const out = await page.evaluate(([hist, targets, base]) => {
   const byRound = {};
   hist.forEach(h => { byRound[h.round] = h; });
   const acc = {};
-  P.PAR_MODES.forEach(m => {
+  /* 🆕 v19 — 셋을 겹쳐 켠 경우(중복 제거 후)도 함께 센다 */
+  const MODES = P.PAR_MODES.concat([{ key: 'all', short: '합침', label: '셋 다 켬(중복 제거)' }]);
+  MODES.forEach(m => {
     acc[m.key] = { label: m.label, short: m.short, lines: 0, rounds: 0,
                    full: [0, 0, 0, 0, 0, 0, 0], equal: [0, 0, 0, 0, 0, 0, 0],
                    fullGames: 0, equalGames: 0, best: 0 };
@@ -91,8 +93,10 @@ const out = await page.evaluate(([hist, targets, base]) => {
     const n = P.parEqualN(keys);
     const row = { round: t.round, axes: keys.length, equalN: n, m: {} };
 
-    P.PAR_MODES.forEach(md => {
-      const lines = P.parallelCombos(ord, keys, md.m, md.per).map(l => l.numbers);
+    MODES.forEach(md => {
+      const lines = (md.key === 'all')
+        ? P.parallelUnion(ord, keys, P.PAR_MODES.map(x => x.key)).map(l => l.numbers)
+        : P.parallelCombos(ord, keys, md.m, md.per).map(l => l.numbers);
       const f = P.gradePool(lines, t.nums, t.bonus);
       const e = P.gradePoolTop(lines, n, t.nums, t.bonus);
       const a = acc[md.key];
@@ -104,7 +108,7 @@ const out = await page.evaluate(([hist, targets, base]) => {
     });
     rows.push(row);
   });
-  return { acc, rows, modes: P.PAR_MODES.map(m => ({ key: m.key, short: m.short, label: m.label })) };
+  return { acc, rows, modes: MODES.map(m => ({ key: m.key, short: m.short, label: m.label })) };
 }, [HIST, targets, BASE]);
 
 const pct = (a, b) => b ? (a / b * 100).toFixed(3) + '%' : '-';
@@ -137,6 +141,7 @@ say('');
 out.modes.forEach(m => say(`${m.short} 최고 적중: ${out.acc[m.key].best}개`));
 say('');
 say('※ 3개 이상 = 5등 이상. 로또 1줄이 3개 이상 맞을 확률은 약 2.24% 다.');
+say('※ 「합침」 = 세 방식을 모두 켜고 번호가 같은 줄을 한 번만 남긴 것.');
 say('※ 📊 내 빈도 축은 소급 검증에 쓸 수 없어(그 회차에 저장한 줄이 없다) 제외했다.');
 
 writeFileSync('backtest_par_modes.txt', L.join('\n') + '\n', 'utf-8');

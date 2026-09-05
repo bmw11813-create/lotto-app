@@ -102,6 +102,29 @@ const R = await page.evaluate(() => {
   out.equalN = P.parEqualN(KEYS);
   out.cmp = P.parCompareModes(ord, KEYS, [1, 2, 3, 4, 5, 6], 7)
     .map(c => ({ key: c.key, lines: c.lines, fullGames: c.full.games, equalGames: c.equal.games }));
+  /* 🆕 v19 — 방식 겹쳐 고르기(합치기) */
+  const uni = P.parallelUnion(ord, KEYS, ['a3x2', 'b2x3', 'c1x6']);
+  const sigs = uni.map(l => l.numbers.join(','));
+  out.union = {
+    count: uni.length,
+    dupSkipped: uni.dupSkipped,
+    unique: new Set(sigs).size,
+    allSix: uni.every(l => l.numbers.length === 6),
+    tagged: uni.every(l => !!l.mode),
+    order: [...new Set(uni.map(l => l.mode))],
+    rawSum: P.parUnionCount(KEYS, ['a3x2', 'b2x3', 'c1x6']),
+  };
+  /* 하나만 켠 경우 — 조합 규칙은 그대로이고 **같은 번호 줄만** 빠진다 */
+  const one = P.parallelUnion(ord, KEYS, ['b2x3']);
+  const raw = P.parallelCombos(ord, KEYS, 2, 3).map(l => l.numbers.join(','));
+  out.unionOne = {
+    count: one.length, raw: raw.length,
+    unique: new Set(raw).size,
+    matchesUnique: one.length === new Set(raw).size,
+    subset: one.every(l => raw.indexOf(l.numbers.join(',')) >= 0),
+  };
+  const uni2 = P.parallelUnion(ord, KEYS, ['a3x2', 'b2x3', 'c1x6']).map(l => l.numbers.join(','));
+  out.unionDeterministic = JSON.stringify(sigs) === JSON.stringify(uni2);
   out.nck = [P.nCk(5, 3), P.nCk(5, 2), P.nCk(5, 1), P.nCk(11, 3), P.nCk(11, 2), P.nCk(11, 1)];
   return out;
 });
@@ -127,10 +150,11 @@ ok('⑥ 겹치면 다음 순위로 밀고 * 로 표시 (실제 ' + (R.subst && R
   R.subst && R.subst.substituted === true && /\*/.test(R.subst.label));
 
 ok('⑦ 공정 비교용 줄 수 = 가장 적은 방식에 맞춘다 (실제 ' + R.equalN + ')', R.equalN === 5);
-ok('★ ⑦ 세 방식을 같은 줄 수로 잘라 채점한다 (실제 ' + R.cmp.map(c => c.equalGames).join(',') + ')',
-  R.cmp.length === 3 && R.cmp.every(c => c.equalGames === 5));
-ok('⑦ 전체 줄 수는 방식마다 그대로 (실제 ' + R.cmp.map(c => c.fullGames).join(',') + ')',
-  JSON.stringify(R.cmp.map(c => c.fullGames)) === JSON.stringify([10, 10, 5]));
+ok('★ ⑦ 방식들을 같은 줄 수로 잘라 채점한다 (실제 ' + R.cmp.map(c => c.equalGames).join(',') + ')',
+  R.cmp.length === 4 && R.cmp.every(c => c.equalGames === 5));
+ok('⑦ 전체 줄 수는 방식마다 그대로 · 맨 뒤는 합침 (실제 ' + R.cmp.map(c => c.fullGames).join(',') + ')',
+  JSON.stringify(R.cmp.slice(0, 3).map(c => c.fullGames)) === JSON.stringify([10, 10, 5])
+  && R.cmp[3].fullGames > 0 && R.cmp[3].fullGames <= 25);
 
 /* 화면에 방식 버튼이 실제로 있는가 */
 const ui = await page.evaluate(() => {
@@ -138,6 +162,30 @@ const ui = await page.evaluate(() => {
   return { has3x2: /3×2/.test(txt), has2x3: /2×3/.test(txt), has1x6: /1×6/.test(txt) };
 });
 ok('화면에 방식 버튼 3개가 보인다 (3×2 / 2×3 / 1×6)', ui.has3x2 && ui.has2x3 && ui.has1x6);
+
+/* ── 🆕 v19 방식 겹쳐 고르기 ─────────────────────────────── */
+ok('⑧ 셋을 켜면 줄이 합쳐진다 (합계 ' + R.union.rawSum + ' → 중복 제거 후 ' + R.union.count + ')',
+  R.union.count > 0 && R.union.count <= R.union.rawSum);
+ok('★ ⑧ 번호가 같은 줄은 한 번만 남는다 (겹쳐서 뺀 줄 ' + R.union.dupSkipped + ')',
+  R.union.unique === R.union.count && R.union.count + R.union.dupSkipped === R.union.rawSum);
+ok('⑧ 합친 뒤에도 모든 줄이 6개', R.union.allSix);
+ok('⑧ 줄마다 어느 방식에서 나왔는지 표시된다', R.union.tagged);
+ok('⑧ 방식 순서가 고정이다 (실제 ' + R.union.order.join('→') + ')',
+  JSON.stringify(R.union.order) === JSON.stringify(['a3x2', 'b2x3', 'c1x6']));
+ok('⑧ 하나만 켜면 그 방식 줄에서 겹치는 것만 빠진다 ('
+   + R.unionOne.raw + '줄 → 고유 ' + R.unionOne.unique + '줄)',
+  R.unionOne.matchesUnique && R.unionOne.subset);
+ok('⑧ 같은 데이터면 합친 결과도 매번 같다', R.unionDeterministic);
+
+const ui2 = await page.evaluate(() => {
+  const cmp = window.__par.parCompareModes;
+  const ALL = Array.from({ length: 45 }, (_, i) => i + 1);
+  const KEYS = ['A', 'B', 'C', 'D', 'E'];
+  const ord = {}; KEYS.forEach((k, i) => { ord[k] = ALL.slice(i).concat(ALL.slice(0, i)); });
+  return cmp(ord, KEYS, [1, 2, 3, 4, 5, 6], 7).map(c => ({ key: c.key, lines: c.lines }));
+});
+ok('⑧ 대조표에 「합침」 줄이 추가된다 (실제 ' + ui2.map(c => c.key).join(',') + ')',
+  ui2.length === 4 && ui2[3].key === 'all' && ui2[3].lines > 0);
 
 console.log('── v18 병렬 3방식 실측 ──');
 checks.forEach(([l, c]) => console.log(' ' + (c ? 'PASS' : 'FAIL') + ' ' + l));
