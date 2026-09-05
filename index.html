@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v17</title>
+  <title>로또 분석기 v18</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -197,7 +197,7 @@ const Link2 = _ic([{d:'M9 17H7A5 5 0 0 1 7 7h2'},{d:'M15 7h2a5 5 0 1 1 0 10h-2'}
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 17;
+const APP_VERSION = 18;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -1229,20 +1229,39 @@ function axisKeys(ord) {
   return AXES.map(a => a.k).filter(k => Array.isArray(ord[k]) && ord[k].length === 45);
 }
 
-// 축 3개 → 한 줄. 겹치면 다음 순위로 밀어 항상 6개를 채운다
-function parallelLine(trio, ord) {
+// ===== 🆕 v18 · 병렬 방식 3종 =====
+// 한 줄은 언제나 6개다. 축을 몇 개 쓰고 축마다 몇 개를 뽑을지만 다르다.
+//   축 3개 × 2개 = 6  (기존 · 그대로 둔다)
+//   축 2개 × 3개 = 6  (신설)
+//   축 1개 × 6개 = 6  (신설 — 한 축이 혼자 6개를 다 채운다)
+// ★ 세 방식은 줄 수가 크게 다르다(11축 기준 165 / 55 / 11). 적중을 비교할 때는
+//   같은 줄 수로 잘라서 봐야 공정하다 — parEqualN·gradePoolTop 참조.
+const PAR_MODES = [
+  { key: 'a3x2', m: 3, per: 2, label: '축 3개 × 2개', short: '3×2' },
+  { key: 'b2x3', m: 2, per: 3, label: '축 2개 × 3개', short: '2×3' },
+  { key: 'c1x6', m: 1, per: 6, label: '축 1개 × 6개', short: '1×6' },
+];
+const PAR_MODE_DEFAULT = 'a3x2';                       // 기존 동작을 기본값으로 유지
+const parMode = (key) => PAR_MODES.find(x => x.key === key) || PAR_MODES[0];
+
+// ※ nCk 는 이미 위(955행 부근)에 있다 — 여기서 다시 만들면 **기존 정의를 덮어쓴다**(함수 선언 호이스팅).
+//   줄 수 표기는 그 함수를 그대로 쓴다.
+
+// 축 묶음 → 한 줄. 축마다 per 개씩. 겹치면 다음 순위로 밀어 항상 6개를 채운다
+function parallelLine(group, ord, per) {
+  per = per || 2;
   const used = [], parts = [];
-  for (const k of trio) {
+  for (const k of group) {
     const list = ord[k];
     if (!list) return null;
     const nums = [], subs = [];
-    for (let i = 0; i < list.length && nums.length < 2; i++) {
+    for (let i = 0; i < list.length && nums.length < per; i++) {
       const n = list[i];
       if (used.indexOf(n) >= 0) continue;
       nums.push(n);
-      if (i >= 2) subs.push(n);              // TOP2 자리를 벗어나 끌어온 번호
+      if (i >= per) subs.push(n);            // TOP(per) 자리를 벗어나 끌어온 번호
     }
-    if (nums.length < 2) return null;
+    if (nums.length < per) return null;
     nums.forEach(n => used.push(n));
     parts.push({ k, nums, subs });
   }
@@ -1252,22 +1271,68 @@ function parallelLine(trio, ord) {
   ).join('+');
   return {
     numbers: used.slice().sort((a, b) => a - b),
-    axes: trio.slice(),
+    axes: group.slice(),
     parts, label,
     substituted: parts.some(p => p.subs.length > 0)
   };
 }
 
-// 축 3개 조합 전체 = C(축수, 3) 줄
-function parallelAll(ord, keys) {
+// 축 m 개 조합 전체 = C(축수, m) 줄.
+// 축 순서는 AXES 고정 순서를 따르므로 같은 데이터면 몇 번을 눌러도 결과가 같다.
+function parallelCombos(ord, keys, m, per) {
   const out = [];
-  for (let a = 0; a < keys.length; a++)
-    for (let b = a + 1; b < keys.length; b++)
-      for (let c = b + 1; c < keys.length; c++) {
-        const line = parallelLine([keys[a], keys[b], keys[c]], ord);
-        if (line) out.push(line);
-      }
+  const pick = (start, acc) => {
+    if (acc.length === m) {
+      const line = parallelLine(acc, ord, per);
+      if (line) out.push(line);
+      return;
+    }
+    for (let i = start; i < keys.length; i++) pick(i + 1, acc.concat([keys[i]]));
+  };
+  pick(0, []);
   return out;
+}
+
+// 기존 호출부 호환 — 축 3개 × 2개(= 종전 동작) 그대로
+function parallelAll(ord, keys) {
+  return parallelCombos(ord, keys, 3, 2);
+}
+
+// 세 방식을 공정하게 비교할 때 쓰는 '같은 줄 수'.
+// 가장 적게 나오는 방식(축 1개 = 축 수만큼)에 맞춘다.
+function parEqualN(keys) {
+  const counts = PAR_MODES.map(md => nCk(keys.length, md.m)).filter(v => v > 0);
+  return counts.length ? Math.min.apply(null, counts) : 0;
+}
+
+// 앞에서 N줄만 잘라 채점 — 자르는 기준은 축 고정 순서라 매번 같다
+function gradePoolTop(combos, n, winNumbers, bonus) {
+  return gradePool((n > 0 ? combos.slice(0, n) : combos), winNumbers, bonus);
+}
+
+// 한 회차에서 세 방식을 나란히 채점한다.
+//   full  = 그 방식이 만드는 전체 줄
+//   equal = 세 방식을 같은 줄 수로 잘라낸 것 (공정 비교용)
+function parCompareModes(ord, keys, winNumbers, bonus) {
+  const n = parEqualN(keys);
+  return PAR_MODES.map(md => {
+    const lines = parallelCombos(ord, keys, md.m, md.per).map(l => l.numbers);
+    return {
+      key: md.key, label: md.label, short: md.short, m: md.m, per: md.per,
+      lines: lines.length,
+      full: gradePool(lines, winNumbers, bonus),
+      equal: gradePoolTop(lines, n, winNumbers, bonus),
+    };
+  });
+}
+
+/* 🆕 v18 — 검증용 접근점.
+   Babel 이 이 스크립트를 자기 스코프에서 돌려 함수들이 전역에 없다.
+   verify_par_modes.mjs 가 계산부를 **실제 파일 그대로** 두드릴 수 있도록 여기만 열어 둔다.
+   화면 동작에는 관여하지 않는다(읽기 전용 참조). */
+if (typeof window !== 'undefined') {
+  window.__par = { PAR_MODES, PAR_MODE_DEFAULT, parMode, nCk,
+                   parallelLine, parallelCombos, parallelAll, parEqualN };
 }
 
 // 조합 묶음 채점 — 3개 이상 적중 줄 수 / 최고 적중
@@ -1316,6 +1381,19 @@ function parBacktestRound(rec, priorHist) {
     par: gradePool(par.map(p => p.numbers), rec.winNumbers, rec.bonus),
     solo: gradePool(solo, rec.winNumbers, rec.bonus)
   };
+}
+
+/* 🆕 v18 — 채점·비교 함수도 검증용으로 열어 둔다(위 __par 에 이어 붙인다) */
+if (typeof window !== 'undefined' && window.__par) {
+  window.__par.gradePool = gradePool;
+  window.__par.gradePoolTop = gradePoolTop;
+  window.__par.parCompareModes = parCompareModes;
+  /* 실제 과거 회차로 대조하려면 순위표를 만드는 앞단도 필요하다 */
+  window.__par.computeEngine = computeEngine;
+  window.__par.buildStrategies = buildStrategies;
+  window.__par.buildRankings = buildRankings;
+  window.__par.axisOrders = axisOrders;
+  window.__par.axisKeys = axisKeys;
 }
 
 // ===== 🔗 병렬 결과 · 매칭 탭 하단 (모의 실험 이력의 "병렬" 카테고리) =====
@@ -1854,7 +1932,8 @@ function App() {
   const [mockRanks, setMockRanks] = useState([6, 15, 26, 26, 43, 43]);   // 수동 고정용 순위
   // 🆕 🔗 병렬 조합 (12축 TOP2 × 3축)
   const [parBusy, setParBusy] = useState(false);
-  const [parSel, setParSel] = useState([]);            // 수동 생성용으로 고른 축 3개
+  const [parSel, setParSel] = useState([]);            // 수동 생성용으로 고른 축
+  const [parModeKey, setParModeKey] = useState(PAR_MODE_DEFAULT);   // 🆕 v18 병렬 방식
   const [parOpen, setParOpen] = useState(false);       // 축별 TOP2 펼치기
   const [parRows, setParRows] = useState([]);          // 소급 백테스트 결과 (통계 탭)
   const [parBt, setParBt] = useState({ busy: false, done: 0, total: 0 });
@@ -1895,8 +1974,12 @@ function App() {
   const parKeys = useMemo(() => axisKeys(parOrd), [parOrd]);
   // 수동 선택은 화면에서 누른 순서와 무관하게 AXES 고정 순서로 정렬해 결과를 항상 같게 만든다
   const parTrio = useMemo(() => AXES.map(a => a.k).filter(k => parSel.indexOf(k) >= 0), [parSel]);
+  /* 🆕 v18 — 방식에 따라 필요한 축 수(m)와 축마다 뽑는 개수(per)가 달라진다 */
+  const parMd = useMemo(() => parMode(parModeKey), [parModeKey]);
+  const parLineCount = useMemo(() => nCk(parKeys.length, parMd.m), [parKeys, parMd]);
   const parPreview = useMemo(() =>
-    (parTrio.length === 3) ? parallelLine(parTrio, parOrd) : null, [parTrio, parOrd]);
+    (parTrio.length === parMd.m) ? parallelLine(parTrio, parOrd, parMd.per) : null,
+    [parTrio, parOrd, parMd]);
 
   // 통계 탭: 선택한 전략의 순위 + "5줄 뽑으면 몇 줄에 들어가나"
   const prefRank = useMemo(() => {
@@ -2449,8 +2532,8 @@ function App() {
   //    줄이 220개라 실구매 50줄 한도에 넣지 않고 rec.par 에만 저장한다 → 손익 통계와 섞이지 않는다
   async function handleParAuto() {
     if (parBusy) return;
-    if (parKeys.length < 3) { showToast('쓸 수 있는 축이 3개 미만입니다'); return; }
-    const lines = parallelAll(parOrd, parKeys);
+    if (parKeys.length < parMd.m) { showToast(`쓸 수 있는 축이 ${parMd.m}개 미만입니다`); return; }
+    const lines = parallelCombos(parOrd, parKeys, parMd.m, parMd.per);
     if (lines.length === 0) { showToast('병렬 조합 생성 실패'); return; }
     const cur = saved.find(r => r.round === round);
     if (cur && cur.par && !confirm(`${round}회 병렬 ${cur.par.combos.length}줄이 이미 있습니다. 다시 만들까요?`)) return;
@@ -2462,6 +2545,8 @@ function App() {
       axes: parKeys.length,
       axisKeys: parKeys.slice(),
       myAxis: !!parOrd.MY,
+      /* 🆕 v18 — 어느 방식으로 만든 줄인지. 없으면 예전 저장분(=축3×2) 으로 본다 */
+      mode: parMd.key, modeLabel: parMd.label, perAxis: parMd.per, axisCount: parMd.m,
       srcLines: (data.games || []).length,
       substituted: lines.some(l => l.substituted),
       combos: lines.map(l => l.numbers),
@@ -2470,7 +2555,7 @@ function App() {
     };
     try {
       await saveRound(data);
-      showToast(`🔗 병렬 ${lines.length}줄 생성 (C(${parKeys.length},3) · 고유 ${data.par.unique}조합)`);
+      showToast(`🔗 병렬 ${lines.length}줄 생성 (${parMd.label} · C(${parKeys.length},${parMd.m}) · 고유 ${data.par.unique}조합)`);
       await loadAll();
     } catch (e) { showToast('저장 실패'); }
     setParBusy(false);
@@ -2479,7 +2564,7 @@ function App() {
   // 🔗 병렬 조합 — ⓑ 수동: 고른 축 3개로 1줄. 이건 실제로 살 줄이라 games 에 넣는다
   async function handleParManual() {
     if (parBusy || generating) return;
-    if (!parPreview) { showToast('축 3개를 골라 주세요'); return; }
+    if (!parPreview) { showToast(`축 ${parMd.m}개를 골라 주세요`); return; }
     const cur = saved.find(r => r.round === round);
     const count = cur ? cur.games.length : 0;
     if (count >= MAX_LINES) { showToast('이미 50줄 가득'); return; }
@@ -2800,24 +2885,42 @@ function App() {
                 </div>
                 <span className={`text-[11px] ${textDim}`}>{parKeys.length}축 사용 가능</span>
               </div>
-              <div className={`text-[11px] ${textDim} leading-relaxed mb-3`}>
-                축마다 <strong>TOP2</strong>를 뽑아 <strong>축 3개 × 2개 = 6개</strong>로 한 줄을 만듭니다.
+              <div className={`text-[11px] ${textDim} leading-relaxed mb-2`}>
+                축마다 <strong>TOP{parMd.per}</strong>을 뽑아 <strong>{parMd.label} = 6개</strong>로 한 줄을 만듭니다.
                 번호가 겹치면 그 축의 <strong>다음 순위</strong>로 대체해(<strong>*</strong> 표시) 항상 6개를 채우고,
                 합계 같은 유효성은 <strong>참고 배지</strong>로만 보여줍니다(재생성 없음).
+              </div>
+
+              {/* 🆕 v18 — 방식 선택. 한 줄은 언제나 6개이고, 축을 몇 개 쓰느냐만 다르다 */}
+              <div className="flex gap-1.5 mb-3">
+                {PAR_MODES.map(md => {
+                  const on = md.key === parModeKey;
+                  const cnt = nCk(parKeys.length, md.m);
+                  return (
+                    <button key={md.key}
+                      onClick={() => { setParModeKey(md.key); setParSel([]); }}
+                      className={`flex-1 py-2 rounded-xl text-[11px] font-bold border-2 active:scale-95 ${on
+                        ? 'border-fuchsia-500 text-fuchsia-600 bg-fuchsia-500/10'
+                        : (dark ? 'border-slate-600 text-slate-400' : 'border-slate-200 text-slate-500')}`}>
+                      {md.short}
+                      <div className="text-[10px] font-normal opacity-80">{cnt}줄</div>
+                    </button>
+                  );
+                })}
               </div>
 
               {!parOrd.MY && (
                 <div className={`text-[11px] leading-relaxed rounded-xl px-3 py-2 mb-3 ${dark ? 'bg-amber-900/30 text-amber-200' : 'bg-amber-50 text-amber-800'}`}>
                   ⚠️ 📊 <strong>내 빈도</strong> 축은 이번 회차에 저장된 줄에서 계산합니다.
-                  아직 줄이 없어 <strong>{parKeys.length}축</strong>만 쓰며 자동 생성은 C({parKeys.length},3)=
-                  <strong>{parKeys.length >= 3 ? (parKeys.length * (parKeys.length - 1) * (parKeys.length - 2) / 6) : 0}줄</strong>이 됩니다.
+                  아직 줄이 없어 <strong>{parKeys.length}축</strong>만 쓰며 자동 생성은 C({parKeys.length},{parMd.m})=
+                  <strong>{parLineCount}줄</strong>이 됩니다.
                 </div>
               )}
 
               {/* 축별 TOP2 */}
               <button onClick={() => setParOpen(!parOpen)}
                 className={`w-full py-2 rounded-xl text-xs font-bold active:scale-95 ${dark ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-700'}`}>
-                축별 TOP2 보기 {parOpen ? '▲' : '▼'}
+                축별 TOP{parMd.per} 보기 {parOpen ? '▲' : '▼'}
               </button>
               {parOpen && (
                 <div className="space-y-1 mt-2">
@@ -2825,9 +2928,9 @@ function App() {
                     <div key={k} className={`flex items-center gap-2 py-1.5 px-2 rounded-lg ${dark ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
                       <span className="text-xs font-semibold w-20 shrink-0">{axisMeta(k).emoji} {axisMeta(k).label}</span>
                       <div className="flex gap-1">
-                        {parOrd[k].slice(0, 2).map(n => <Ball key={n} n={n} sm />)}
+                        {parOrd[k].slice(0, parMd.per).map(n => <Ball key={n} n={n} sm />)}
                       </div>
-                      <span className={`text-[10px] ${textDim} ml-auto`}>다음 {parOrd[k].slice(2, 5).join('·')}</span>
+                      <span className={`text-[10px] ${textDim} ml-auto`}>다음 {parOrd[k].slice(parMd.per, parMd.per + 3).join('·')}</span>
                     </div>
                   ))}
                 </div>
@@ -2835,16 +2938,18 @@ function App() {
 
               {/* ⓐ 자동 — 축 3개 조합 전체 */}
               <div className={`mt-3 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
-                <div className="text-xs font-bold mb-1">ⓐ 자동 — 축 3개 조합 전체</div>
+                <div className="text-xs font-bold mb-1">ⓐ 자동 — 축 {parMd.m}개 조합 전체</div>
                 <div className={`text-[11px] ${textDim} mb-2 leading-relaxed`}>
-                  C({parKeys.length},3) = <strong>{parKeys.length >= 3 ? (parKeys.length * (parKeys.length - 1) * (parKeys.length - 2) / 6) : 0}줄</strong>.
-                  50줄 한도를 훨씬 넘으므로 <strong>실구매 줄이 아니라 검증용</strong>으로 따로 저장하고,
-                  매칭 탭 <strong>병렬 카테고리</strong>에서 누적 집계합니다 (손익 통계와 섞이지 않음).
+                  C({parKeys.length},{parMd.m}) = <strong>{parLineCount}줄</strong>.
+                  {parLineCount > 50
+                    ? <> 50줄 한도를 넘으므로 <strong>실구매 줄이 아니라 검증용</strong>으로 따로 저장하고,</>
+                    : <> 50줄 한도 안에 들어옵니다. 그래도 <strong>검증용</strong>으로 따로 저장하고,</>}
+                  {' '}매칭 탭 <strong>병렬 카테고리</strong>에서 누적 집계합니다 (손익 통계와 섞이지 않음).
                 </div>
-                <button onClick={handleParAuto} disabled={parBusy || parKeys.length < 3}
+                <button onClick={handleParAuto} disabled={parBusy || parKeys.length < parMd.m}
                   className="w-full bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1 active:scale-95 disabled:opacity-50">
                   {parBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
-                  자동 전체 생성 ({parKeys.length >= 3 ? (parKeys.length * (parKeys.length - 1) * (parKeys.length - 2) / 6) : 0}줄)
+                  자동 전체 생성 ({parLineCount}줄)
                 </button>
                 {currentRound && currentRound.par && (
                   <div className={`text-[11px] ${textDim} mt-1.5`}>
@@ -2856,16 +2961,16 @@ function App() {
 
               {/* ⓑ 수동 — 축 3개 직접 선택 */}
               <div className={`mt-3 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
-                <div className="text-xs font-bold mb-1">ⓑ 수동 — 축 3개 직접 선택 ({parSel.length}/3)</div>
+                <div className="text-xs font-bold mb-1">ⓑ 수동 — 축 {parMd.m}개 직접 선택 ({parSel.length}/{parMd.m})</div>
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {parKeys.map(k => {
                     const on = parSel.indexOf(k) >= 0;
                     return (
                       <button key={k} onClick={() => {
-                        if (!on && parSel.length >= 3) showToast('축은 3개까지 고를 수 있습니다');
+                        if (!on && parSel.length >= parMd.m) showToast(`축은 ${parMd.m}개까지 고를 수 있습니다`);
                         setParSel(prev => {
                           if (prev.indexOf(k) >= 0) return prev.filter(x => x !== k);
-                          return prev.length >= 3 ? prev : prev.concat([k]);
+                          return prev.length >= parMd.m ? prev : prev.concat([k]);
                         });
                       }}
                         className={`text-[11px] px-2 py-1 rounded-full font-semibold border-2 active:scale-95 ${on
@@ -2894,7 +2999,7 @@ function App() {
                     </button>
                   </div>
                 ) : (
-                  <div className={`text-[11px] ${textDim}`}>축을 3개 고르면 한 줄이 바로 만들어집니다.</div>
+                  <div className={`text-[11px] ${textDim}`}>축을 {parMd.m}개 고르면 한 줄이 바로 만들어집니다.</div>
                 )}
               </div>
             </div>
@@ -3803,7 +3908,13 @@ function App() {
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
               <div className="font-bold mb-1 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> 안내</div>
               <p className="leading-relaxed">로또는 무작위 추첨, 어떤 분석도 당첨 보장 안 됨. 통계 참고용 (1336 도박상담).</p>
-              <p className="mt-2 font-semibold">v17 · 2026.8.21 · 🔗 병렬 조합(12축 TOP2 × 3축) + 병렬 vs 단일 백테스트 추가</p>
+              <p className="mt-2 font-semibold">v18 · 2026.9.5 · 🔗 병렬 조합 3방식(축3×2 / 축2×3 / 축1×6) + 같은 줄 수 공정 대조</p>
+              <p className="mt-1">v17 · 2026.8.21 · 🔗 병렬 조합(12축 TOP2 × 3축) + 병렬 vs 단일 백테스트 추가</p>
+              <p className="mt-2 leading-relaxed">
+                ※ 실측(최근 400회차 · 미래정보 차단) 3개 이상 적중률 — 3×2 <b>1.94%</b> · 2×3 <b>2.02%</b> · 1×6 <b>2.14%</b>.
+                무작위 기대치 <b>2.24%</b> 보다 <b>셋 다 낮다.</b> 방식 간 차이도 우연 범위다.
+                <br />어느 방식도 당첨을 높여주지 않는다 — 줄 수(비용)만 다르다.
+              </p>
             </div>
           </div>
         )}

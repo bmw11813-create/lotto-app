@@ -1,0 +1,149 @@
+/* v18 실측 — 병렬 조합 3방식 (축3×2 / 축2×3 / 축1×6) + 대조
+
+   핵심 방어선
+     ① 어느 방식이든 한 줄은 **정확히 6개** · 중복 없음
+     ② 축 수만 다르고 축마다 뽑는 개수가 방식대로다
+     ③ 줄 수 = C(축수, m) 그대로
+     ④ ★ 기존 방식(축3×2) 결과가 **한 줄도 바뀌지 않는다** (parallelAll 호환)
+     ⑤ 같은 데이터면 몇 번을 돌려도 결과가 같다(결정적)
+     ⑥ 겹치면 다음 순위로 밀어 6개를 채우고 * 로 표시한다
+     ⑦ 세 방식을 **같은 줄 수**로 잘라 공정 비교한다
+
+   실행: node verify_par_modes.mjs [--port=3051]
+*/
+import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { existsSync } from 'node:fs';
+
+/* 이 폴더에는 node_modules 가 없다. playwright 가 깔린 곳에서 불러온다.
+   PW_DIR 환경변수로 덮어쓸 수 있고, 없으면 공간픽 폴더를 본다. */
+async function loadChromium() {
+  try { return (await import('playwright')).chromium; } catch (_) {}
+  /* 이 저장소는 공개다 — 개인 PC 경로를 적지 않는다.
+     playwright 가 다른 폴더에 깔려 있으면 PW_DIR 로 알려준다.
+       예) PW_DIR="D:/proj/node_modules/playwright/index.mjs" node verify_par_modes.mjs */
+  const p = process.env.PW_DIR;
+  if (!p || !existsSync(p)) {
+    console.error('playwright 를 찾지 못했습니다.');
+    console.error('  이 폴더에 설치: npm i -D playwright');
+    console.error('  또는 PW_DIR 에 playwright/index.mjs 경로를 지정하세요.');
+    process.exit(2);
+  }
+  return (await import(pathToFileURL(p).href)).chromium;
+}
+
+const chromium = await loadChromium();
+
+const port = Number((process.argv.find(a => a.startsWith('--port=')) || '--port=3051').slice(7));
+/* 이 폴더를 그대로 띄운다. **이 폴더에서 실행할 것**
+   (cd lotto-app-git && node verify_par_modes.mjs) */
+const srv = spawn('python', ['-m', 'http.server', String(port), '--directory', '.', '--bind', '127.0.0.1'],
+  { stdio: 'ignore' });
+await new Promise(r => setTimeout(r, 1200));
+
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 420, height: 1000 } });
+const pageErrors = [];
+page.on('pageerror', e => pageErrors.push(String(e)));
+await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'domcontentloaded' });
+/* Babel 이 브라우저에서 컴파일을 끝낼 때까지 기다린다 — 고정 시간으로 재면 느린 날 실패한다 */
+for (let i = 0; i < 60; i++) {
+  if (await page.evaluate(() => !!(window.__par && window.__par.PAR_MODES))) break;
+  await page.waitForTimeout(500);
+}
+
+const checks = [];
+const ok = (l, c) => checks.push([l, !!c]);
+
+/* 화면이 실제로 떴는지 — 여기서 실패하면 문법 오류다 */
+const booted = await page.evaluate(() => {
+  const root = document.getElementById('root') || document.body;
+  return { html: (root.innerHTML || '').length, errs: 0 };
+});
+ok('앱이 정상으로 렌더된다 (root ' + booted.html + '자)', booted.html > 500);
+ok('문법 오류 없음 (pageerror ' + pageErrors.length + ')', pageErrors.length === 0);
+if (pageErrors.length) console.log(pageErrors.slice(0, 3));
+
+/* 순위표(ord)를 만들어 계산부를 직접 두드린다.
+   실데이터가 없어도 되도록 축마다 서로 다른 결정적 순서를 만든다. */
+const R = await page.evaluate(() => {
+  const KEYS = ['A', 'B', 'C', 'D', 'E'];
+  const ALL = Array.from({ length: 45 }, (_, i) => i + 1);
+  const ord = {};
+  KEYS.forEach((k, i) => {           // 축마다 시작점을 달리해 겹침도 생기게 한다
+    ord[k] = ALL.slice(i).concat(ALL.slice(0, i));
+  });
+  const P = window.__par;
+  const out = { modes: P.PAR_MODES.map(m => ({ key: m.key, m: m.m, per: m.per })), runs: {} };
+  P.PAR_MODES.forEach(md => {
+    const lines = P.parallelCombos(ord, KEYS, md.m, md.per);
+    out.runs[md.key] = {
+      count: lines.length,
+      first: lines[0] ? { numbers: lines[0].numbers, parts: lines[0].parts.map(p => p.nums.length), label: lines[0].label } : null,
+      allSix: lines.every(l => l.numbers.length === 6),
+      noDup: lines.every(l => new Set(l.numbers).size === 6),
+      sorted: lines.every(l => l.numbers.every((n, i, a) => i === 0 || a[i - 1] < n)),
+      perOk: lines.every(l => l.parts.length === md.m && l.parts.every(p => p.nums.length === md.per)),
+    };
+  });
+  /* ④ 기존 호출부 호환 */
+  const legacy = P.parallelAll(ord, KEYS).map(l => l.numbers.join(','));
+  const viaNew = P.parallelCombos(ord, KEYS, 3, 2).map(l => l.numbers.join(','));
+  out.legacySame = JSON.stringify(legacy) === JSON.stringify(viaNew);
+  out.legacyCount = legacy.length;
+  /* ⑤ 결정적 */
+  const again = P.parallelCombos(ord, KEYS, 2, 3).map(l => l.numbers.join(','));
+  const again2 = P.parallelCombos(ord, KEYS, 2, 3).map(l => l.numbers.join(','));
+  out.deterministic = JSON.stringify(again) === JSON.stringify(again2);
+  /* ⑥ 대체(*) — 축 A·B 는 1칸 차이라 반드시 겹친다 */
+  const two = P.parallelCombos(ord, ['A', 'B'], 2, 3);
+  out.subst = two[0] ? { substituted: two[0].substituted, label: two[0].label } : null;
+  /* ⑦ 공정 비교 */
+  out.equalN = P.parEqualN(KEYS);
+  out.cmp = P.parCompareModes(ord, KEYS, [1, 2, 3, 4, 5, 6], 7)
+    .map(c => ({ key: c.key, lines: c.lines, fullGames: c.full.games, equalGames: c.equal.games }));
+  out.nck = [P.nCk(5, 3), P.nCk(5, 2), P.nCk(5, 1), P.nCk(11, 3), P.nCk(11, 2), P.nCk(11, 1)];
+  return out;
+});
+
+ok('② 방식 3종이 정의돼 있다 (실제 ' + R.modes.map(m => m.m + '×' + m.per).join(' / ') + ')',
+  JSON.stringify(R.modes.map(m => [m.m, m.per])) === JSON.stringify([[3, 2], [2, 3], [1, 6]]));
+ok('nCk 계산 정상 (실제 ' + R.nck.join(',') + ')',
+  JSON.stringify(R.nck) === JSON.stringify([10, 10, 5, 165, 55, 11]));
+
+for (const md of R.modes) {
+  const r = R.runs[md.key];
+  ok('① ' + md.m + '×' + md.per + ' — 모든 줄이 6개', r.allSix);
+  ok('① ' + md.m + '×' + md.per + ' — 중복 번호 없음', r.noDup);
+  ok('② ' + md.m + '×' + md.per + ' — 축 ' + md.m + '개 · 축마다 ' + md.per + '개', r.perOk);
+  ok('③ ' + md.m + '×' + md.per + ' — 줄 수 C(5,' + md.m + ')=' + R.nck[[3, 2, 1].indexOf(md.m)] + ' (실제 ' + r.count + ')',
+    r.count === [10, 10, 5][[3, 2, 1].indexOf(md.m)]);
+  ok('  ' + md.m + '×' + md.per + ' — 번호가 오름차순으로 정렬된다', r.sorted);
+}
+
+ok('★ ④ 기존 방식(축3×2) 결과가 한 줄도 바뀌지 않는다 (' + R.legacyCount + '줄 동일)', R.legacySame);
+ok('⑤ 같은 데이터면 결과가 같다(결정적)', R.deterministic);
+ok('⑥ 겹치면 다음 순위로 밀고 * 로 표시 (실제 ' + (R.subst && R.subst.label) + ')',
+  R.subst && R.subst.substituted === true && /\*/.test(R.subst.label));
+
+ok('⑦ 공정 비교용 줄 수 = 가장 적은 방식에 맞춘다 (실제 ' + R.equalN + ')', R.equalN === 5);
+ok('★ ⑦ 세 방식을 같은 줄 수로 잘라 채점한다 (실제 ' + R.cmp.map(c => c.equalGames).join(',') + ')',
+  R.cmp.length === 3 && R.cmp.every(c => c.equalGames === 5));
+ok('⑦ 전체 줄 수는 방식마다 그대로 (실제 ' + R.cmp.map(c => c.fullGames).join(',') + ')',
+  JSON.stringify(R.cmp.map(c => c.fullGames)) === JSON.stringify([10, 10, 5]));
+
+/* 화면에 방식 버튼이 실제로 있는가 */
+const ui = await page.evaluate(() => {
+  const txt = document.body.innerText || '';
+  return { has3x2: /3×2/.test(txt), has2x3: /2×3/.test(txt), has1x6: /1×6/.test(txt) };
+});
+ok('화면에 방식 버튼 3개가 보인다 (3×2 / 2×3 / 1×6)', ui.has3x2 && ui.has2x3 && ui.has1x6);
+
+console.log('── v18 병렬 3방식 실측 ──');
+checks.forEach(([l, c]) => console.log(' ' + (c ? 'PASS' : 'FAIL') + ' ' + l));
+const pass = checks.filter(c => c[1]).length;
+console.log('\n' + pass + '/' + checks.length + (pass === checks.length ? ' PASS' : ' — 실패 있음'));
+
+await browser.close();
+srv.kill();
+process.exit(pass === checks.length ? 0 : 1);

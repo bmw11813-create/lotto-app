@@ -4,6 +4,7 @@ win_history.xlsx
 
 # 로컬 백업 (git 이력에 이전 버전이 이미 있음)
 index_backup.html
+*.bak_*
 
 # 실행 산출물
 __pycache__/
