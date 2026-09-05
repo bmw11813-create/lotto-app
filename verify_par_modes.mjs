@@ -125,6 +125,27 @@ const R = await page.evaluate(() => {
   };
   const uni2 = P.parallelUnion(ord, KEYS, ['a3x2', 'b2x3', 'c1x6']).map(l => l.numbers.join(','));
   out.unionDeterministic = JSON.stringify(sigs) === JSON.stringify(uni2);
+  /* 🆕 v20 — 중복 축 진단 · 커버 · 무작위 대조군 */
+  const dupOrd = { A: ALL.slice(), B: ALL.slice(), C: ALL.slice().reverse() };
+  out.v20 = {
+    overlapSame: P.axisOverlap(dupOrd, ['A', 'B'], 6)[0].same,          // 완전 동일 → 6
+    overlapDiff: P.axisOverlap(dupOrd, ['A', 'C'], 6)[0].same,          // 정반대 → 0
+    dupPairs: P.axisDupPairs(dupOrd, ['A', 'B', 'C']).map(d => d.a + d.b),
+    warn: P.AXIS_DUP_WARN,
+    cover6: P.coverCount([{ numbers: [1, 2, 3, 4, 5, 6] }]),
+    cover9: P.coverCount([{ numbers: [1, 2, 3, 4, 5, 6] }, { numbers: [4, 5, 6, 7, 8, 9] }]),
+    pickN: P.coverPick(P.parallelCombos(ord, KEYS, 3, 2), 3).length,
+    pickGrows: (() => {
+      const src = P.parallelCombos(ord, KEYS, 3, 2);
+      const a = P.coverCount(P.coverPick(src, 2));
+      const b = P.coverCount(src.slice(0, 2));
+      return a >= b;                                    // 커버 우선이 앞에서 자른 것보다 못하지 않다
+    })(),
+    randSame: JSON.stringify(P.randomLines(5, 42)) === JSON.stringify(P.randomLines(5, 42)),
+    randDiff: JSON.stringify(P.randomLines(5, 42)) !== JSON.stringify(P.randomLines(5, 43)),
+    randShape: P.randomLines(20, 7).every(l => l.length === 6 && new Set(l).size === 6
+      && l.every(n => n >= 1 && n <= 45) && l.every((n, i, arr) => i === 0 || arr[i - 1] < n)),
+  };
   out.nck = [P.nCk(5, 3), P.nCk(5, 2), P.nCk(5, 1), P.nCk(11, 3), P.nCk(11, 2), P.nCk(11, 1)];
   return out;
 });
@@ -186,6 +207,20 @@ const ui2 = await page.evaluate(() => {
 });
 ok('⑧ 대조표에 「합침」 줄이 추가된다 (실제 ' + ui2.map(c => c.key).join(',') + ')',
   ui2.length === 4 && ui2[3].key === 'all' && ui2[3].lines > 0);
+
+/* ── 🆕 v20 중복 축 진단 · 커버 · 무작위 대조군 ─────────── */
+const V = R.v20;
+ok('⑨ 똑같은 축 두 개는 겹침 6/6 (실제 ' + V.overlapSame + ')', V.overlapSame === 6);
+ok('⑨ 정반대 축은 겹침 0/6 (실제 ' + V.overlapDiff + ')', V.overlapDiff === 0);
+ok('★ ⑨ 겹침 ' + V.warn + ' 이상만 중복으로 잡는다 (실제 ' + JSON.stringify(V.dupPairs) + ')',
+  V.dupPairs.length === 1 && V.dupPairs[0] === 'AB');
+ok('⑩ 커버 세기 — 한 줄 6개 (실제 ' + V.cover6 + ')', V.cover6 === 6);
+ok('⑩ 커버 세기 — 겹치는 줄은 한 번만 (4,5,6 중복 → 9)', V.cover9 === 9);
+ok('⑩ 커버 우선 선별이 앞에서 자른 것보다 좁지 않다', V.pickGrows);
+ok('⑩ 요청한 줄 수만큼 고른다 (실제 ' + V.pickN + ')', V.pickN === 3);
+ok('★ ⑪ 무작위 대조군은 씨앗이 같으면 같다(다시 봐도 같은 기준)', V.randSame);
+ok('⑪ 씨앗이 다르면 다르다', V.randDiff);
+ok('⑪ 무작위 줄도 1~45 · 6개 · 중복 없음 · 오름차순', V.randShape);
 
 console.log('── v18 병렬 3방식 실측 ──');
 checks.forEach(([l, c]) => console.log(' ' + (c ? 'PASS' : 'FAIL') + ' ' + l));

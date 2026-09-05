@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v19</title>
+  <title>로또 분석기 v20</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -197,7 +197,7 @@ const Link2 = _ic([{d:'M9 17H7A5 5 0 0 1 7 7h2'},{d:'M15 7h2a5 5 0 1 1 0 10h-2'}
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 19;
+const APP_VERSION = 20;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -1373,6 +1373,87 @@ if (typeof window !== 'undefined') {
                    parallelUnion, parUnionCount };
 }
 
+/* ══════════════════════════════════════════════════════════════
+ * 🆕 v20 — 실측으로 드러난 문제 세 가지에 대한 조치
+ * ─────────────────────────────────────────────────────────────
+ *  실측(최근 200회차 · analyze_axes.txt)에서 나온 사실
+ *    · 165줄이 45개 번호 중 **평균 20.3개만** 덮는다 (절반도 못 덮는다)
+ *    · 165줄 중 **44.3줄이 번호가 같은 중복**이다 (고유 120.7줄)
+ *    · 같은 줄 수 무작위 대조군 2.44% vs 병렬 1.67% — **무작위가 낫다**
+ *    · 콜드넘버(COLD)와 미출현폭탄(Y) 은 TOP6 중 5.86개가 겹친다 = 사실상 같은 축
+ *
+ *  ① 커버 우선 선별 — 아직 안 쓴 번호를 가진 줄을 먼저 고른다
+ *  ② 무작위 대조군 — 같은 줄 수 무작위와 나란히 본다(자기 성적만 보면 착각한다)
+ *  ③ 중복 축 진단 — 서로 같은 말을 하는 축을 알려준다
+ * ══════════════════════════════════════════════════════════════ */
+
+/* ① 커버 우선 선별.
+   줄 묶음에서 n 줄을 고르되, **아직 한 번도 안 쓴 번호**를 많이 가진 줄을 먼저 집는다.
+   동점이면 원래 순서(축 고정 순서)를 따르므로 결과는 매번 같다. */
+function coverPick(lines, n) {
+  const pool = (lines || []).slice();
+  if (!(n > 0) || n >= pool.length) return pool;
+  const used = {}, out = [], taken = {};
+  while (out.length < n) {
+    let best = -1, bestGain = -1;
+    for (let i = 0; i < pool.length; i++) {
+      if (taken[i]) continue;
+      let gain = 0;
+      const nums = pool[i].numbers || pool[i];
+      for (const x of nums) if (!used[x]) gain++;
+      if (gain > bestGain) { bestGain = gain; best = i; }
+      if (gain === 6) break;                 // 더 좋을 수 없다
+    }
+    if (best < 0) break;
+    taken[best] = 1;
+    const nums = pool[best].numbers || pool[best];
+    for (const x of nums) used[x] = 1;
+    out.push(pool[best]);
+  }
+  return out;
+}
+
+/* 줄 묶음이 덮는 번호 개수 */
+function coverCount(lines) {
+  const used = {};
+  (lines || []).forEach(l => (l.numbers || l).forEach(n => { used[n] = 1; }));
+  return Object.keys(used).length;
+}
+
+/* ② 같은 줄 수 무작위 대조군.
+   ★ 씨앗을 받아 결정적으로 만든다 — 다시 봐도 같은 대조군이어야 비교가 된다. */
+function randomLines(n, seed) {
+  let st = (seed || 1) >>> 0;
+  const rnd = () => ((st = (st * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const pool = Array.from({ length: 45 }, (_, x) => x + 1);
+    for (let j = 44; j > 0; j--) {
+      const q = Math.floor(rnd() * (j + 1));
+      const t = pool[j]; pool[j] = pool[q]; pool[q] = t;
+    }
+    out.push(pool.slice(0, 6).sort((a, b) => a - b));
+  }
+  return out;
+}
+
+/* ③ 중복 축 진단 — TOP6 가 몇 개나 겹치는지. 4 이상이면 사실상 같은 말을 하는 축이다. */
+const AXIS_DUP_WARN = 4;
+function axisOverlap(ord, keys, top) {
+  const t = top || 6, out = [];
+  for (let a = 0; a < keys.length; a++)
+    for (let b = a + 1; b < keys.length; b++) {
+      const A = (ord[keys[a]] || []).slice(0, t), B = (ord[keys[b]] || []).slice(0, t);
+      if (!A.length || !B.length) continue;
+      const same = A.filter(n => B.indexOf(n) >= 0).length;
+      out.push({ a: keys[a], b: keys[b], same, top: t });
+    }
+  return out.sort((x, y) => y.same - x.same);
+}
+function axisDupPairs(ord, keys) {
+  return axisOverlap(ord, keys, 6).filter(p => p.same >= AXIS_DUP_WARN);
+}
+
 // 조합 묶음 채점 — 3개 이상 적중 줄 수 / 최고 적중
 function gradePool(combos, winNumbers, bonus) {
   const win = {};
@@ -1427,6 +1508,12 @@ if (typeof window !== 'undefined' && window.__par) {
   window.__par.gradePoolTop = gradePoolTop;
   window.__par.parCompareModes = parCompareModes;
   /* 실제 과거 회차로 대조하려면 순위표를 만드는 앞단도 필요하다 */
+  window.__par.coverPick = coverPick;
+  window.__par.coverCount = coverCount;
+  window.__par.randomLines = randomLines;
+  window.__par.axisOverlap = axisOverlap;
+  window.__par.axisDupPairs = axisDupPairs;
+  window.__par.AXIS_DUP_WARN = AXIS_DUP_WARN;
   window.__par.computeEngine = computeEngine;
   window.__par.buildStrategies = buildStrategies;
   window.__par.buildRankings = buildRankings;
@@ -1973,7 +2060,11 @@ function App() {
   const [parSel, setParSel] = useState([]);            // 수동 생성용으로 고른 축
   /* 🆕 v19 — 방식을 **여러 개 켤 수 있다**(중복 선택). 기본은 기존 동작 하나만. */
   const [parModeKeys, setParModeKeys] = useState([PAR_MODE_DEFAULT]);
-  const [parOpen, setParOpen] = useState(false);       // 축별 TOP2 펼치기
+  /* 🆕 v20 — 끈 축. 실측상 축끼리 겹치는 쌍이 있고(콜드↔미출현 TOP6 중 5.86개 동일)
+     성적이 바닥인 축도 있다. 빼면 줄 수도 줄고 번호가 덜 쏠린다. */
+  const [parOff, setParOff] = useState([]);
+  const [parOpen, setParOpen] = useState(false);       // 축별 TOP 펼치기
+  const [parAxOpen, setParAxOpen] = useState(false);   // 🆕 v20 축 끄기 펼치기
   const [parRows, setParRows] = useState([]);          // 소급 백테스트 결과 (통계 탭)
   const [parBt, setParBt] = useState({ busy: false, done: 0, total: 0 });
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -2010,13 +2101,25 @@ function App() {
     const cur = saved.find(r => r.round === round);
     return axisOrders(engine, RANKS, cur ? freqTable(cur) : null);
   }, [engine, RANKS, saved, round]);
-  const parKeys = useMemo(() => axisKeys(parOrd), [parOrd]);
+  /* 켠 방식들 — PAR_MODES 순서 유지 (아래 parCover 가 쓰므로 먼저 만든다) */
+  const parMdList = useMemo(
+    () => PAR_MODES.filter(m => parModeKeys.indexOf(m.key) >= 0), [parModeKeys]);
+  const parKeysAll = useMemo(() => axisKeys(parOrd), [parOrd]);
+  const parKeys = useMemo(
+    () => parKeysAll.filter(k => parOff.indexOf(k) < 0), [parKeysAll, parOff]);
+  /* 🆕 v20 — 서로 같은 말을 하는 축 쌍(TOP6 가 4개 이상 겹침) */
+  const parDup = useMemo(
+    () => (parKeys.length ? axisDupPairs(parOrd, parKeys) : []), [parOrd, parKeys]);
+  /* 🆕 v20 — 지금 만들 줄이 덮는 번호 수. 낮으면 아무리 많이 사도 범위가 안 넓어진다 */
+  const parCover = useMemo(() => {
+    if (!parKeys.length || !parMdList.length) return 0;
+    try { return coverCount(parallelUnion(parOrd, parKeys, parModeKeys)); }
+    catch (e) { return 0; }
+  }, [parOrd, parKeys, parModeKeys, parMdList]);
   // 수동 선택은 화면에서 누른 순서와 무관하게 AXES 고정 순서로 정렬해 결과를 항상 같게 만든다
   const parTrio = useMemo(() => AXES.map(a => a.k).filter(k => parSel.indexOf(k) >= 0), [parSel]);
   /* 🆕 v18 — 방식에 따라 필요한 축 수(m)와 축마다 뽑는 개수(per)가 달라진다 */
-  /* 켠 방식들 — PAR_MODES 순서 유지 */
-  const parMdList = useMemo(
-    () => PAR_MODES.filter(m => parModeKeys.indexOf(m.key) >= 0), [parModeKeys]);
+
   /* 수동(ⓑ)은 축 개수가 하나로 정해져야 하므로 **켠 것 중 첫 번째**를 쓴다 */
   const parMd = useMemo(() => parMdList[0] || parMode(PAR_MODE_DEFAULT), [parMdList]);
   /* 축별 TOP 표시는 켠 방식 중 가장 많이 뽑는 개수에 맞춘다 */
@@ -2939,7 +3042,9 @@ function App() {
                 <div className="font-bold text-sm flex items-center gap-2">
                   <Link2 className="w-4 h-4 text-fuchsia-500" /> 🔗 병렬 조합
                 </div>
-                <span className={`text-[11px] ${textDim}`}>{parKeys.length}축 사용 가능</span>
+                <span className={`text-[11px] ${textDim}`}>
+                  {parKeys.length}축 사용{parOff.length ? ` · ${parOff.length}축 끔` : ''}
+                </span>
               </div>
               <div className={`text-[11px] ${textDim} leading-relaxed mb-2`}>
                 한 줄은 언제나 <strong>6개</strong>입니다. 방식은 <strong>여러 개를 함께 켤 수 있고</strong>,
@@ -2981,6 +3086,60 @@ function App() {
                   ⚠️ 📊 <strong>내 빈도</strong> 축은 이번 회차에 저장된 줄에서 계산합니다.
                   아직 줄이 없어 <strong>{parKeys.length}축</strong>만 쓰며 자동 생성은
                   <strong>{parLineCount}줄</strong>이 됩니다(겹치는 줄은 빠져 실제로는 더 적을 수 있습니다).
+                </div>
+              )}
+
+              {/* 🆕 v20 — 무작위 대조군 · 커버 · 중복 축 (실측 근거는 analyze_axes.txt) */}
+              <div className={`text-[11px] leading-relaxed rounded-xl px-3 py-2 mb-3 ${dark ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
+                <div>
+                  지금 설정이 덮는 번호 <strong>{parCover}/45</strong>
+                  {parCover > 0 && parCover < 30 && <span className="text-amber-600"> · 절반도 안 덮습니다</span>}
+                </div>
+                <div className={textDim}>
+                  같은 줄 수를 <strong>무작위</strong>로 사면 1줄당 5등 이상 확률이 <strong>2.24%</strong> 입니다.
+                  실측(최근 200회차)에서 병렬 3×2 는 <strong>1.67%</strong> 로 그보다 낮았습니다.
+                </div>
+                {parDup.length > 0 && (
+                  <div className="text-amber-600 mt-1">
+                    ⚠️ 사실상 같은 축 {parDup.length}쌍 —{' '}
+                    {parDup.slice(0, 3).map(d => `${axisShort(d.a)}↔${axisShort(d.b)}(${d.same}/6)`).join(' · ')}
+                    {' '}· 하나를 꺼도 결과가 거의 같습니다
+                  </div>
+                )}
+              </div>
+
+              {/* 🆕 v20 — 축 끄기 */}
+              <button onClick={() => setParAxOpen(!parAxOpen)}
+                className={`w-full py-2 rounded-xl text-xs font-bold active:scale-95 mb-2 ${dark ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-700'}`}>
+                축 끄기 ({parKeys.length}/{parKeysAll.length} 사용 중) {parAxOpen ? '▲' : '▼'}
+              </button>
+              {parAxOpen && (
+                <div className={`rounded-xl p-2 mb-3 ${dark ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
+                  <div className={`text-[10px] ${textDim} mb-1.5 leading-relaxed`}>
+                    끈 축은 조합에서 빠집니다. 겹치는 축이나 성적이 낮은 축을 빼면 줄 수가 줄고 번호 쏠림도 덜합니다.
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {parKeysAll.map(k => {
+                      const off = parOff.indexOf(k) >= 0;
+                      const dup = parDup.some(d => d.a === k || d.b === k);
+                      return (
+                        <button key={k} onClick={() => setParOff(prev => {
+                          if (prev.indexOf(k) >= 0) return prev.filter(x => x !== k);
+                          if (parKeysAll.length - prev.length <= 1) { showToast('축은 하나 이상 남겨야 합니다'); return prev; }
+                          return prev.concat([k]);
+                        })}
+                          className={`text-[11px] px-2 py-1 rounded-full font-semibold border-2 active:scale-95 ${off
+                            ? (dark ? 'border-slate-700 text-slate-600 line-through' : 'border-slate-200 text-slate-300 line-through')
+                            : (dup ? 'border-amber-500 text-amber-600' : 'border-fuchsia-500 text-fuchsia-600')}`}>
+                          {axisMeta(k).emoji} {axisShort(k)}{dup && !off ? ' ⚠' : ''}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {parOff.length > 0 && (
+                    <button onClick={() => setParOff([])}
+                      className={`mt-2 text-[11px] ${textDim} underline`}>전부 다시 켜기</button>
+                  )}
                 </div>
               )}
 
@@ -3979,16 +4138,21 @@ function App() {
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
               <div className="font-bold mb-1 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> 안내</div>
               <p className="leading-relaxed">로또는 무작위 추첨, 어떤 분석도 당첨 보장 안 됨. 통계 참고용 (1336 도박상담).</p>
-              <p className="mt-2 font-semibold">v19 · 2026.9.5 · 🔗 방식 <b>겹쳐 고르기</b>(중복 선택) + 합친 결과 대조</p>
+              <p className="mt-2 font-semibold">v20 · 2026.9.6 · 🎲 무작위 대조군 · 🧹 축 끄기 · ⚠️ 중복 축 진단</p>
+              <p className="mt-1">v19 · 2026.9.5 · 🔗 방식 겹쳐 고르기(중복 선택) + 합친 결과 대조</p>
               <p className="mt-1">v18 · 2026.9.5 · 🔗 병렬 조합 3방식(축3×2 / 축2×3 / 축1×6) + 같은 줄 수 공정 대조</p>
               <p className="mt-1">v17 · 2026.8.21 · 🔗 병렬 조합(12축 TOP2 × 3축) + 병렬 vs 단일 백테스트 추가</p>
               <p className="mt-2 leading-relaxed">
-                ※ 실측(최근 400회차 · 미래정보 차단) 3개 이상 적중률 —
-                3×2 <b>1.94%</b> · 2×3 <b>2.02%</b> · 1×6 <b>2.14%</b> · 셋 다 켬 <b>1.92%</b>.
-                무작위 기대치 <b>2.24%</b> 보다 <b>전부 낮다.</b> 방식 간 차이도 우연 범위다.
-                <br />※ 셋을 다 켜도 줄은 <b>165 → 168개</b>로 3줄만 는다. 2×3·1×6 이 만드는 줄이
-                거의 3×2 안에 이미 들어 있기 때문이다 — <b>겹쳐 켠다고 범위가 넓어지지 않는다.</b>
-                <br />어느 방식도 당첨을 높여주지 않는다 — 줄 수(비용)만 다르다.
+                ※ 실측(최근 200~400회차 · 미래정보 차단). 같은 줄 수 <b>무작위 대조군 2.24%</b> 기준으로 본다.
+                <br />· 병렬 3×2 <b>1.63~1.94%</b> · 2×3 <b>2.02%</b> · 1×6 <b>2.14%</b> · 셋 다 켬 <b>1.92%</b>
+                — <b>전부 무작위보다 낮다.</b>
+                <br />· 원인은 <b>범위</b>다. 165줄이 45개 중 <b>평균 20.3개</b>만 덮는다.
+                축들이 내놓는 번호 자체가 그 안에 있어, 줄을 어떻게 골라도 넓어지지 않는다.
+                <br />· 셋을 다 켜도 줄은 <b>165 → 168개</b>뿐. 2×3·1×6 이 3×2 안에 거의 들어 있다.
+                <br />· <b>콜드넘버 ↔ 미출현폭탄</b>은 TOP6 중 <b>5.86개</b>가 같다 — 사실상 한 축이다.
+                <br />· 축을 빼도 성적은 그대로다. 대신 <b>핫·미출현·휴식을 끄면 165줄 → 56줄</b>로
+                줄어도 적중률이 오히려 조금 낫다(1.84%) — <b>돈을 3분의 1로 줄일 수 있다.</b>
+                <br />어떤 방식도 당첨을 높여주지 않는다. 이 앱으로 고를 수 있는 것은 <b>얼마를 쓸지</b>뿐이다.
               </p>
             </div>
           </div>
