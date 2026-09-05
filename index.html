@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v23</title>
+  <title>로또 분석기 v24</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -197,7 +197,7 @@ const Link2 = _ic([{d:'M9 17H7A5 5 0 0 1 7 7h2'},{d:'M15 7h2a5 5 0 1 1 0 10h-2'}
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 23;
+const APP_VERSION = 24;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -1712,6 +1712,11 @@ if (typeof window !== 'undefined' && window.__par) {
   window.__par.gradePoolTop = gradePoolTop;
   window.__par.parCompareModes = parCompareModes;
   /* 실제 과거 회차로 대조하려면 순위표를 만드는 앞단도 필요하다 */
+  window.__par.poolPrize = poolPrize;
+  window.__par.TICKET_PRICE = TICKET_PRICE;
+  window.poolPrize = poolPrize;      /* 검증에서 화면 계산을 그대로 두드리기 위해 */
+  window.ParTab = ParTab;
+  window.STRAT6 = STRAT6;
   window.__par.STRAT6 = STRAT6;
   window.__par.DISPLAY_ORDER6 = DISPLAY_ORDER6;
   window.__par.mergeRanked = mergeRanked;
@@ -1739,6 +1744,199 @@ if (typeof window !== 'undefined' && window.__par) {
   window.__par.buildRankings = buildRankings;
   window.__par.axisOrders = axisOrders;
   window.__par.axisKeys = axisKeys;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 🆕 v24 — 「병렬」 탭
+ * ─────────────────────────────────────────────────────────────
+ *  자동 생성한 줄은 rec.par 에만 담겨 있어 **번호를 볼 곳이 없었다**
+ *  (매칭 탭 안쪽에 집계만 있었다). 하단 탭에 자리를 따로 만든다.
+ *
+ *  같이 보여주는 것 — 이것이 없으면 판단이 안 된다
+ *    · 산 줄 수 × 1,000원 = 들어간 돈
+ *    · 맞은 등수별 당첨금 합계
+ *    · 손익, 그리고 **같은 줄 수를 무작위로 샀다면** 얼마였을지
+ *  ★ 병렬 줄은 실제로 사지 않은 검증용이다. 실구매 손익과 섞지 않는다.
+ * ══════════════════════════════════════════════════════════════ */
+const TICKET_PRICE = 1000;
+
+/* 줄 묶음 채점 → 등수별 개수·당첨금 합계 */
+function poolPrize(combos, winNumbers, bonus) {
+  const out = { games: (combos || []).length, tiers: {}, total: 0, hit: 0 };
+  if (!Array.isArray(winNumbers) || winNumbers.length !== 6) return out;
+  (combos || []).forEach(c => {
+    const pz = calculatePrize(c, winNumbers, bonus);
+    if (pz.tier > 0) {
+      out.tiers[pz.label] = (out.tiers[pz.label] || 0) + 1;
+      out.total += pz.amount;
+      out.hit++;
+    }
+  });
+  out.cost = out.games * TICKET_PRICE;
+  out.net = out.total - out.cost;
+  return out;
+}
+
+/* 「병렬」 탭 본문 — 회차별 자동 생성 줄과 비용·당첨 비교 */
+function ParTab({ saved, round, dark, card, textDim }) {
+  const [sel, setSel] = React.useState(round);
+  const [open, setOpen] = React.useState(false);
+
+  const rounds = React.useMemo(() => (saved || [])
+    .filter(r => r && r.par && Array.isArray(r.par.combos) && r.par.combos.length > 0)
+    .sort((a, b) => b.round - a.round), [saved]);
+
+  React.useEffect(() => {
+    if (rounds.length && !rounds.some(r => r.round === sel)) setSel(rounds[0].round);
+  }, [rounds]);
+
+  const cur = rounds.find(r => r.round === sel) || null;
+  const scored = React.useMemo(() => {
+    if (!cur) return null;
+    const graded = Array.isArray(cur.winNumbers) && cur.winNumbers.length === 6;
+    const par = poolPrize(cur.par.combos, cur.winNumbers, cur.bonus);
+    /* 같은 줄 수를 무작위로 샀다면? — 씨앗 고정이라 다시 봐도 같은 대조군이다 */
+    const rnd = poolPrize(randomLines(cur.par.combos.length, cur.round * 7919), cur.winNumbers, cur.bonus);
+    /* 실제로 산 줄(실구매) */
+    const buy = poolPrize((cur.games || []).map(g => g.numbers), cur.winNumbers, cur.bonus);
+    return { graded, par, rnd, buy };
+  }, [cur]);
+
+  const won = (n) => (n || 0).toLocaleString() + '원';
+  const netColor = (v) => v > 0 ? 'text-orange-500' : (v < 0 ? 'text-slate-400' : textDim);
+
+  if (!rounds.length) {
+    return (
+      <div className={`${card} rounded-2xl shadow-md p-6 text-center`}>
+        <Link2 className="w-8 h-8 mx-auto mb-2 text-fuchsia-400" />
+        <div className="font-bold text-sm mb-1">자동 생성된 줄이 없습니다</div>
+        <div className={`text-xs ${textDim} leading-relaxed`}>
+          생성 탭 아래 <strong>🔗 병렬 조합</strong>에서 «자동 전체 생성» 을 누르면
+          여기에 번호와 비용·당첨 비교가 쌓입니다.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* 회차 고르기 */}
+      <div className={`${card} rounded-2xl shadow-md p-3`}>
+        <div className={`text-xs font-semibold ${textDim} mb-2`}>회차</div>
+        <div className="flex flex-wrap gap-1.5">
+          {rounds.slice(0, 12).map(r => (
+            <button key={r.round} onClick={() => setSel(r.round)}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-bold border-2 active:scale-95 ${r.round === sel
+                ? 'border-fuchsia-500 text-fuchsia-600'
+                : (dark ? 'border-slate-600 text-slate-400' : 'border-slate-200 text-slate-500')}`}>
+              {r.round}회 {r.par.combos.length}줄
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {cur && (
+        <>
+          {/* 만든 방식 */}
+          <div className={`${card} rounded-2xl shadow-md p-4`}>
+            <div className="font-bold text-sm mb-1 flex items-center gap-2">
+              <Link2 className="w-4 h-4 text-fuchsia-500" /> {cur.round}회 자동 생성
+            </div>
+            <div className={`text-[11px] ${textDim} leading-relaxed`}>
+              {cur.par.modeLabel || '축3×2'} · {cur.par.axes}축 · <strong>{cur.par.combos.length}줄</strong>
+              {cur.par.unique ? ` · 고유 ${cur.par.unique}조합` : ''}
+              {cur.par.dupSkipped ? ` · 겹쳐서 뺀 ${cur.par.dupSkipped}줄` : ''}
+              {cur.par.substituted ? ' · 대체 있음(*)' : ''}
+            </div>
+          </div>
+
+          {/* ★ 비용 · 당첨 비교표 */}
+          <div className={`${card} rounded-2xl shadow-md p-4`}>
+            <div className="font-bold text-sm mb-2">구매비용 · 당첨금 비교</div>
+            {!scored.graded ? (
+              <div className={`text-xs ${textDim} leading-relaxed`}>
+                아직 당첨번호가 없습니다. 매칭 탭에서 {cur.round}회 당첨번호를 넣으면
+                여기 당첨금과 손익이 채워집니다.
+                <div className="mt-2">
+                  지금까지 들어간 돈(자동 생성분): <strong>{won(cur.par.combos.length * TICKET_PRICE)}</strong>
+                </div>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className={textDim}>
+                      <th className="text-left py-1">구분</th>
+                      <th className="text-right">줄</th>
+                      <th className="text-right">구매비용</th>
+                      <th className="text-right">당첨금</th>
+                      <th className="text-right">손익</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[['🔗 자동 생성', scored.par],
+                      ['🎲 같은 줄 수 무작위', scored.rnd],
+                      ['🧾 실제 구매', scored.buy]].map(([lb, v]) => (
+                      <tr key={lb} className={`border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
+                        <td className="py-1.5">{lb}</td>
+                        <td className="text-right">{v.games}</td>
+                        <td className="text-right">{won(v.cost)}</td>
+                        <td className={`text-right font-bold ${v.total > 0 ? 'text-orange-500' : textDim}`}>{won(v.total)}</td>
+                        <td className={`text-right font-bold ${netColor(v.net)}`}>
+                          {v.net > 0 ? '+' : ''}{won(v.net)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className={`text-[11px] ${textDim} mt-2 leading-relaxed`}>
+                  {Object.keys(scored.par.tiers).length > 0
+                    ? <>자동 생성 당첨 — {Object.keys(scored.par.tiers).map(k => `${k} ${scored.par.tiers[k]}건`).join(' · ')}</>
+                    : <>자동 생성분은 이 회차에 당첨이 없습니다.</>}
+                  <br />※ 자동 생성 줄은 <strong>실제로 사지 않은 검증용</strong>입니다.
+                  실구매 손익 통계와 섞이지 않습니다. 표의 «구매비용» 은 «샀다면 들었을 돈» 입니다.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 번호 목록 */}
+          <div className={`${card} rounded-2xl shadow-md p-4`}>
+            <button onClick={() => setOpen(!open)}
+              className={`w-full py-2 rounded-xl text-xs font-bold active:scale-95 ${dark ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-700'}`}>
+              번호 {cur.par.combos.length}줄 보기 {open ? '▲' : '▼'}
+            </button>
+            {open && (
+              <div className="space-y-1 mt-2">
+                {cur.par.combos.map((c, i) => {
+                  const pz = scored.graded ? calculatePrize(c, cur.winNumbers, cur.bonus) : null;
+                  return (
+                    <div key={i} className={`flex items-center gap-1.5 py-1.5 px-2 rounded-lg ${pz && pz.tier > 0
+                      ? (dark ? 'bg-orange-900/30' : 'bg-orange-50')
+                      : (dark ? 'bg-slate-700/40' : 'bg-slate-50')}`}>
+                      <span className={`text-[10px] ${textDim} w-7 shrink-0`}>{i + 1}</span>
+                      <div className="flex gap-1 flex-wrap">
+                        {c.map(n => <Ball key={n} n={n} sm
+                          hit={scored.graded && cur.winNumbers.indexOf(n) >= 0} />)}
+                      </div>
+                      {pz && pz.tier > 0 && (
+                        <span className="text-[10px] font-bold text-orange-500 ml-auto shrink-0">{pz.label}</span>
+                      )}
+                      {(cur.par.labels && cur.par.labels[i]) && (
+                        <span className={`text-[9px] ${textDim} ml-auto shrink-0 max-w-[38%] truncate`}>
+                          {cur.par.labels[i]}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 // ===== 🔗 병렬 결과 · 매칭 탭 하단 (모의 실험 이력의 "병렬" 카테고리) =====
@@ -2929,7 +3127,10 @@ function App() {
     if (parBusy) return;
     if (!parMdList.length) { showToast('방식을 하나 이상 켜 주세요'); return; }
     if (parKeys.length < parMinAxes) { showToast(`쓸 수 있는 축이 ${parMinAxes}개 미만입니다`); return; }
-    if (parMdList.some(m => m.mix) && parKeys.indexOf(POPMIX_KEY) < 0) {
+    /* ★ [v24 버그수정] 6축 통합에서는 분배회피 축 키가 'G_POP' 이다.
+       'T' 로만 찾다 보니 축을 켜 두어도 **항상** 안내가 뜨고 생성이 막혔다.
+       순위표를 보고 실제 키를 고른다(popmixKeyOf). */
+    if (parMdList.some(m => m.mix) && parKeys.indexOf(popmixKeyOf(parOrd)) < 0) {
       showToast('분배섞기를 쓰려면 🤫 분배회피 축을 켜 두세요'); return;
     }
     const lines = parallelUnion(parOrd, parKeys, parModeKeys);
@@ -3188,6 +3389,10 @@ function App() {
 
       <div className="px-4 py-4">
         {/* ===== 생성 ===== */}
+        {tab === 'par' && (
+          <ParTab saved={saved} round={round} dark={dark} card={card} textDim={textDim} />
+        )}
+
         {tab === 'gen' && (
           <div className="space-y-4">
             <div className={`${card} rounded-2xl shadow-md p-4`}>
@@ -4427,7 +4632,8 @@ function App() {
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
               <div className="font-bold mb-1 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> 안내</div>
               <p className="leading-relaxed">로또는 무작위 추첨, 어떤 분석도 당첨 보장 안 됨. 통계 참고용 (1336 도박상담).</p>
-              <p className="mt-2 font-semibold">v23 · 2026.9.6 · 🧩 <b>전략 카드도 9개 → 6개</b> (v22 는 병렬 축만 줄였다)</p>
+              <p className="mt-2 font-semibold">v24 · 2026.9.6 · 🔗 <b>「병렬」 탭 신설</b>(번호·구매비용·당첨금 비교) · 분배섞기 막힘 수정</p>
+              <p className="mt-1">v23 · 2026.9.6 · 🧩 전략 카드도 9개 → 6개</p>
               <p className="mt-1">v22 · 2026.9.6 · 🧩 12축 → 6축 통합(겹치는 개념 합침)</p>
               <p className="mt-1">v21 · 2026.9.6 · 🤫 분배회피 섞기(4:2·3:3·2:4) · 한도 50→100줄</p>
               <p className="mt-1">v20 · 2026.9.6 · 🎲 무작위 대조군 · 🧹 축 끄기 · ⚠️ 중복 축 진단</p>
@@ -4463,11 +4669,12 @@ function App() {
       </div>
 
       <div className={`fixed bottom-0 left-0 right-0 ${tabBar} border-t shadow-2xl z-30`}>
-        <div className="grid grid-cols-5">
+        <div className="grid grid-cols-6">
           {[
             { id: 'gen', icon: Sparkles, label: '생성' },
             { id: 'saved', icon: Save, label: '저장' },
             { id: 'match', icon: Trophy, label: '매칭' },
+            { id: 'par', icon: Link2, label: '병렬' },
             { id: 'stats', icon: BarChart3, label: '통계' },
             { id: 'set', icon: Settings, label: '설정' }
           ].map(t => {
