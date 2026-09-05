@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v20</title>
+  <title>로또 분석기 v21</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -197,7 +197,7 @@ const Link2 = _ic([{d:'M9 17H7A5 5 0 0 1 7 7h2'},{d:'M15 7h2a5 5 0 1 1 0 10h-2'}
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 20;
+const APP_VERSION = 21;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -1240,6 +1240,9 @@ const PAR_MODES = [
   { key: 'a3x2', m: 3, per: 2, label: '축 3개 × 2개', short: '3×2' },
   { key: 'b2x3', m: 2, per: 3, label: '축 2개 × 3개', short: '2×3' },
   { key: 'c1x6', m: 1, per: 6, label: '축 1개 × 6개', short: '1×6' },
+  /* 🆕 v21 — 분배회피(🤫) × 다른 축을 4:2 / 3:3 / 2:4 로 섞는다.
+     확률이 아니라 **당첨 시 나눠 갖는 인원**을 줄이는 것이 목적이다. */
+  { key: 'dpop', m: 2, per: 0, mix: true, label: '분배회피 섞기 (4:2·3:3·2:4)', short: '분배섞기' },
 ];
 const PAR_MODE_DEFAULT = 'a3x2';                       // 기존 동작을 기본값으로 유지
 const parMode = (key) => PAR_MODES.find(x => x.key === key) || PAR_MODES[0];
@@ -1249,19 +1252,23 @@ const parMode = (key) => PAR_MODES.find(x => x.key === key) || PAR_MODES[0];
 
 // 축 묶음 → 한 줄. 축마다 per 개씩. 겹치면 다음 순위로 밀어 항상 6개를 채운다
 function parallelLine(group, ord, per) {
-  per = per || 2;
+  /* per 는 숫자(모든 축 같은 개수) 또는 배열(축마다 다른 개수)이다.
+     [2026-09-06 · v21] 배열을 받게 넓혔다 — 분배회피 4 + 다른 축 2 처럼
+     **한쪽에 더 무게를 싣는** 조합을 만들기 위해서다. 숫자로 주면 종전과 똑같다. */
+  const perOf = (i) => Array.isArray(per) ? (per[i] || 0) : (per || 2);
   const used = [], parts = [];
-  for (const k of group) {
+  for (let gi = 0; gi < group.length; gi++) {
+    const k = group[gi], want = perOf(gi);
     const list = ord[k];
-    if (!list) return null;
+    if (!list || want <= 0) return null;
     const nums = [], subs = [];
-    for (let i = 0; i < list.length && nums.length < per; i++) {
+    for (let i = 0; i < list.length && nums.length < want; i++) {
       const n = list[i];
       if (used.indexOf(n) >= 0) continue;
       nums.push(n);
-      if (i >= per) subs.push(n);            // TOP(per) 자리를 벗어나 끌어온 번호
+      if (i >= want) subs.push(n);           // TOP(want) 자리를 벗어나 끌어온 번호
     }
-    if (nums.length < per) return null;
+    if (nums.length < want) return null;
     nums.forEach(n => used.push(n));
     parts.push({ k, nums, subs });
   }
@@ -1308,7 +1315,8 @@ function parallelUnion(ord, keys, modeKeys) {
   const out = [], seen = {};
   let dup = 0;
   picked.forEach(md => {
-    parallelCombos(ord, keys, md.m, md.per).forEach(line => {
+    const made = md.mix ? popMixAll(ord, keys) : parallelCombos(ord, keys, md.m, md.per);
+    made.forEach(line => {
       const sig = line.numbers.join(',');
       if (seen[sig]) { dup++; return; }
       seen[sig] = 1;
@@ -1323,7 +1331,9 @@ function parallelUnion(ord, keys, modeKeys) {
 function parUnionCount(keys, modeKeys) {
   return PAR_MODES
     .filter(md => (modeKeys || []).indexOf(md.key) >= 0)
-    .reduce((a, md) => a + nCk(keys.length, md.m), 0);
+    /* 분배섞기는 조합수가 아니라 (상대 축 수 × 비율 3가지) 다 */
+    .reduce((a, md) => a + (md.mix ? Math.max(0, keys.length - 1) * POPMIX_RATIOS.length
+                                   : nCk(keys.length, md.m)), 0);
 }
 
 // 세 방식을 공정하게 비교할 때 쓰는 '같은 줄 수'.
@@ -1344,7 +1354,9 @@ function gradePoolTop(combos, n, winNumbers, bonus) {
 function parCompareModes(ord, keys, winNumbers, bonus) {
   const n = parEqualN(keys);
   const rows = PAR_MODES.map(md => {
-    const lines = parallelCombos(ord, keys, md.m, md.per).map(l => l.numbers);
+    /* 분배섞기는 조합이 아니라 축 쌍 × 비율이라 만드는 함수가 다르다 */
+    const lines = (md.mix ? popMixAll(ord, keys) : parallelCombos(ord, keys, md.m, md.per))
+      .map(l => l.numbers);
     return {
       key: md.key, label: md.label, short: md.short, m: md.m, per: md.per,
       lines: lines.length,
@@ -1454,6 +1466,54 @@ function axisDupPairs(ord, keys) {
   return axisOverlap(ord, keys, 6).filter(p => p.same >= AXIS_DUP_WARN);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ * 🆕 v21 — 🤫 분배회피 섞기 (당첨금을 덜 나누기 위한 조합)
+ * ─────────────────────────────────────────────────────────────
+ *  확률은 못 올린다. 올릴 수 있는 것은 **당첨됐을 때 받는 금액**이다.
+ *  1등이 나오면 당첨자끼리 나눠 갖는데, 사람들은 생일 때문에 1~31 을 편중되게 고른다.
+ *  분배회피(T) 축이 그 '대중성 점수'(popularityScore 385행)를 이미 계산한다 —
+ *  합계 스위트존 · 32 이상 최소 2개 · 연속수 · 등차수열 회피.
+ *
+ *  ★ 여기서 하는 일: 그 축을 **다른 축과 섞는다.**
+ *    4:2 (분배회피에 무게) / 3:3 (반반) / 2:4 (다른 축에 무게)
+ *    비율은 줄마다 돌아가며 바뀐다 — 무작위처럼 보이되 **씨앗이 같으면 결과도 같다**
+ *    (같은 회차를 다시 열었을 때 다른 줄이 나오면 안 된다).
+ *
+ *  ★ 적중 확률은 이걸로도 안 오른다. 실측으로 확인하고 그 값을 화면에 적는다.
+ * ══════════════════════════════════════════════════════════════ */
+const POPMIX_KEY = 'T';                       // 분배회피 축
+const POPMIX_RATIOS = [[4, 2], [3, 3], [2, 4]];   // [분배회피에서, 상대 축에서]
+
+/* 분배회피 × 상대 축 한 줄. ratio = [분배회피 개수, 상대 축 개수] */
+function popMixLine(otherKey, ord, ratio) {
+  if (!ord[POPMIX_KEY] || !ord[otherKey] || otherKey === POPMIX_KEY) return null;
+  const line = parallelLine([POPMIX_KEY, otherKey], ord, ratio);
+  if (!line) return null;
+  line.mix = ratio.slice();
+  line.label = `${axisShort(POPMIX_KEY)}${ratio[0]}+${axisShort(otherKey)}${ratio[1]}`
+    + (line.substituted ? ' *' : '');
+  return line;
+}
+
+/* 쓸 수 있는 상대 축 전부 × 비율 3가지.
+   비율 순서는 축마다 한 칸씩 밀어 한쪽 비율만 몰리지 않게 한다(씨앗 없이도 고르게 섞인다). */
+function popMixAll(ord, keys) {
+  const others = keys.filter(k => k !== POPMIX_KEY);
+  const out = [], seen = {};
+  others.forEach((k, idx) => {
+    for (let r = 0; r < POPMIX_RATIOS.length; r++) {
+      const ratio = POPMIX_RATIOS[(idx + r) % POPMIX_RATIOS.length];
+      const line = popMixLine(k, ord, ratio);
+      if (!line) continue;
+      const sig = line.numbers.join(',');
+      if (seen[sig]) continue;               // 같은 번호 줄은 한 번만
+      seen[sig] = 1;
+      out.push(line);
+    }
+  });
+  return out;
+}
+
 // 조합 묶음 채점 — 3개 이상 적중 줄 수 / 최고 적중
 function gradePool(combos, winNumbers, bonus) {
   const win = {};
@@ -1508,6 +1568,10 @@ if (typeof window !== 'undefined' && window.__par) {
   window.__par.gradePoolTop = gradePoolTop;
   window.__par.parCompareModes = parCompareModes;
   /* 실제 과거 회차로 대조하려면 순위표를 만드는 앞단도 필요하다 */
+  window.__par.popMixLine = popMixLine;
+  window.__par.popMixAll = popMixAll;
+  window.__par.POPMIX_RATIOS = POPMIX_RATIOS;
+  window.__par.POPMIX_KEY = POPMIX_KEY;
   window.__par.coverPick = coverPick;
   window.__par.coverCount = coverCount;
   window.__par.randomLines = randomLines;
@@ -1767,7 +1831,10 @@ function FreqPanel({ r, dark, textDim }) {
   );
 }
 
-const MAX_LINES = 50;
+/* [2026-09-06 · v20] 한도 50 → 100. 조건별 5줄씩 채우면 50줄로는 금세 찼다.
+   ★ 문구에 숫자를 박지 말고 MAX_LINES 를 쓴다 — 종전에 '이미 50줄 가득' 이
+     하드코딩돼 있어 한도를 바꿔도 화면이 옛 숫자를 말했다. */
+const MAX_LINES = 100;
 const BATCH_SIZE = 5;
 
 // ===== 오늘 날짜 기준 '구매 대상' 회차 자동 계산 =====
@@ -2124,15 +2191,19 @@ function App() {
   const parMd = useMemo(() => parMdList[0] || parMode(PAR_MODE_DEFAULT), [parMdList]);
   /* 축별 TOP 표시는 켠 방식 중 가장 많이 뽑는 개수에 맞춘다 */
   const parMaxPer = useMemo(
-    () => parMdList.reduce((a, m) => Math.max(a, m.per), 0) || parMd.per, [parMdList, parMd]);
+    () => parMdList.reduce((a, m) => Math.max(a, m.mix ? 4 : m.per), 0) || 2, [parMdList]);
+  /* 분배섞기는 축을 직접 고르는 방식이 아니라 수동(ⓑ)에서 뺀다 */
+  const parManualMd = useMemo(
+    () => parMdList.filter(m => !m.mix)[0] || null, [parMdList]);
   /* 자동(ⓐ) 줄 수 — 켠 방식 전부의 합(중복 제거 전) */
   const parLineCount = useMemo(
     () => parUnionCount(parKeys, parModeKeys), [parKeys, parModeKeys]);
   const parMinAxes = useMemo(
     () => parMdList.reduce((a, m) => Math.min(a, m.m), 99), [parMdList]);
   const parPreview = useMemo(() =>
-    (parTrio.length === parMd.m) ? parallelLine(parTrio, parOrd, parMd.per) : null,
-    [parTrio, parOrd, parMd]);
+    (parManualMd && parTrio.length === parManualMd.m)
+      ? parallelLine(parTrio, parOrd, parManualMd.per) : null,
+    [parTrio, parOrd, parManualMd]);
 
   // 통계 탭: 선택한 전략의 순위 + "5줄 뽑으면 몇 줄에 들어가나"
   const prefRank = useMemo(() => {
@@ -2499,7 +2570,7 @@ function App() {
     setGenerating(true);
     const current = saved.find(r => r.round === round);
     const currentCount = current ? current.games.length : 0;
-    if (currentCount >= MAX_LINES) { showToast('이미 50줄 가득'); setGenerating(false); return; }
+    if (currentCount >= MAX_LINES) { showToast(`이미 ${MAX_LINES}줄 가득`); setGenerating(false); return; }
     const remaining = MAX_LINES - currentCount;
     const wantCount = Math.min(BATCH_SIZE, remaining);
     // 이미 저장된 줄 수만큼 순위를 이어받는다 (같은 전략을 또 눌러도 같은 줄이 안 나오게)
@@ -2531,7 +2602,7 @@ function App() {
     const ft = freqTable(cur);
     if (ft.missing.length === 0) { showToast('미포함 번호 없음 — 이미 45개 전부 커버'); return; }
     const room = MAX_LINES - cur.games.length;
-    if (room <= 0) { showToast('이미 50줄 가득'); return; }
+    if (room <= 0) { showToast(`이미 ${MAX_LINES}줄 가득`); return; }
     setGenerating(true);
     const lines = buildCoverLines(ft, Math.min(2, room));
     if (lines.length === 0) { showToast('보완 줄 생성 실패'); setGenerating(false); return; }
@@ -2687,6 +2758,9 @@ function App() {
     if (parBusy) return;
     if (!parMdList.length) { showToast('방식을 하나 이상 켜 주세요'); return; }
     if (parKeys.length < parMinAxes) { showToast(`쓸 수 있는 축이 ${parMinAxes}개 미만입니다`); return; }
+    if (parMdList.some(m => m.mix) && parKeys.indexOf(POPMIX_KEY) < 0) {
+      showToast('분배섞기를 쓰려면 🤫 분배회피 축을 켜 두세요'); return;
+    }
     const lines = parallelUnion(parOrd, parKeys, parModeKeys);
     if (lines.length === 0) { showToast('병렬 조합 생성 실패'); return; }
     const cur = saved.find(r => r.round === round);
@@ -2723,10 +2797,10 @@ function App() {
   // 🔗 병렬 조합 — ⓑ 수동: 고른 축 3개로 1줄. 이건 실제로 살 줄이라 games 에 넣는다
   async function handleParManual() {
     if (parBusy || generating) return;
-    if (!parPreview) { showToast(`축 ${parMd.m}개를 골라 주세요`); return; }
+    if (!parPreview) { showToast(parManualMd ? `축 ${parManualMd.m}개를 골라 주세요` : '분배섞기는 자동 생성으로 만듭니다'); return; }
     const cur = saved.find(r => r.round === round);
     const count = cur ? cur.games.length : 0;
-    if (count >= MAX_LINES) { showToast('이미 50줄 가득'); return; }
+    if (count >= MAX_LINES) { showToast(`이미 ${MAX_LINES}줄 가득`); return; }
     setParBusy(true);
     const data = cur || { round, date: new Date().toISOString().split('T')[0], games: [], winNumbers: null, bonus: null, matches: null };
     const id = data.games.length > 0 ? Math.max.apply(null, data.games.map(g => g.id)) + 1 : 1;
@@ -3032,7 +3106,7 @@ function App() {
             ) : (
               <div className={`${card} rounded-2xl shadow-md p-6 text-center`}>
                 <Trophy className="w-10 h-10 mx-auto text-emerald-500 mb-2" />
-                <div className="font-bold text-emerald-600">50줄 모두 저장!</div>
+                <div className="font-bold text-emerald-600">{MAX_LINES}줄 모두 저장!</div>
               </div>
             )}
 
@@ -3166,11 +3240,13 @@ function App() {
               <div className={`mt-3 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
                 <div className="text-xs font-bold mb-1">ⓐ 자동 — 켠 방식 전체 ({parMdList.map(m => m.short).join(' + ')})</div>
                 <div className={`text-[11px] ${textDim} mb-2 leading-relaxed`}>
-                  {parMdList.map(m => `C(${parKeys.length},${m.m})=${nCk(parKeys.length, m.m)}`).join(' + ')} =
+                  {parMdList.map(m => m.mix
+                    ? `분배섞기=${Math.max(0, parKeys.length - 1) * POPMIX_RATIOS.length}`
+                    : `C(${parKeys.length},${m.m})=${nCk(parKeys.length, m.m)}`).join(' + ')} =
                   <strong> 최대 {parLineCount}줄</strong> (번호가 같은 줄은 한 번만 남습니다).
-                  {parLineCount > 50
-                    ? <> 50줄 한도를 넘으므로 <strong>실구매 줄이 아니라 검증용</strong>으로 따로 저장하고,</>
-                    : <> 50줄 한도 안에 들어옵니다. 그래도 <strong>검증용</strong>으로 따로 저장하고,</>}
+                  {parLineCount > MAX_LINES
+                    ? <> {MAX_LINES}줄 한도를 넘으므로 <strong>실구매 줄이 아니라 검증용</strong>으로 따로 저장하고,</>
+                    : <> {MAX_LINES}줄 한도 안에 들어옵니다. 그래도 <strong>검증용</strong>으로 따로 저장하고,</>}
                   {' '}매칭 탭 <strong>병렬 카테고리</strong>에서 누적 집계합니다 (손익 통계와 섞이지 않음).
                 </div>
                 <button onClick={handleParAuto} disabled={parBusy || !parMdList.length || parKeys.length < parMinAxes}
@@ -3189,18 +3265,19 @@ function App() {
               {/* ⓑ 수동 — 축 3개 직접 선택 */}
               <div className={`mt-3 pt-3 border-t ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
                 <div className="text-xs font-bold mb-1">
-                  ⓑ 수동 — 축 {parMd.m}개 직접 선택 ({parSel.length}/{parMd.m})
-                  {parMdList.length > 1 && <span className={`ml-1 font-normal ${textDim}`}>· 켠 방식 중 <b>{parMd.short}</b> 기준</span>}
+                  ⓑ 수동 — {parManualMd ? `축 ${parManualMd.m}개 직접 선택 (${parSel.length}/${parManualMd.m})` : '축 조합 방식을 켜야 씁니다'}
+                  {parManualMd && parMdList.length > 1 && <span className={`ml-1 font-normal ${textDim}`}>· 켠 방식 중 <b>{parManualMd.short}</b> 기준</span>}
                 </div>
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {parKeys.map(k => {
                     const on = parSel.indexOf(k) >= 0;
                     return (
                       <button key={k} onClick={() => {
-                        if (!on && parSel.length >= parMd.m) showToast(`축은 ${parMd.m}개까지 고를 수 있습니다`);
+                        if (!parManualMd) { showToast('분배섞기는 축을 직접 고르지 않습니다'); return; }
+                        if (!on && parSel.length >= parManualMd.m) showToast(`축은 ${parManualMd.m}개까지 고를 수 있습니다`);
                         setParSel(prev => {
                           if (prev.indexOf(k) >= 0) return prev.filter(x => x !== k);
-                          return prev.length >= parMd.m ? prev : prev.concat([k]);
+                          return prev.length >= parManualMd.m ? prev : prev.concat([k]);
                         });
                       }}
                         className={`text-[11px] px-2 py-1 rounded-full font-semibold border-2 active:scale-95 ${on
@@ -3229,7 +3306,7 @@ function App() {
                     </button>
                   </div>
                 ) : (
-                  <div className={`text-[11px] ${textDim}`}>축을 {parMd.m}개 고르면 한 줄이 바로 만들어집니다.</div>
+                  <div className={`text-[11px] ${textDim}`}>{parManualMd ? `축을 ${parManualMd.m}개 고르면 한 줄이 바로 만들어집니다.` : '분배섞기만 켜져 있어 수동 선택은 쓰지 않습니다.'}</div>
                 )}
               </div>
             </div>
@@ -4138,7 +4215,8 @@ function App() {
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
               <div className="font-bold mb-1 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> 안내</div>
               <p className="leading-relaxed">로또는 무작위 추첨, 어떤 분석도 당첨 보장 안 됨. 통계 참고용 (1336 도박상담).</p>
-              <p className="mt-2 font-semibold">v20 · 2026.9.6 · 🎲 무작위 대조군 · 🧹 축 끄기 · ⚠️ 중복 축 진단</p>
+              <p className="mt-2 font-semibold">v21 · 2026.9.6 · 🤫 분배회피 섞기(4:2·3:3·2:4) · 한도 50→100줄</p>
+              <p className="mt-1">v20 · 2026.9.6 · 🎲 무작위 대조군 · 🧹 축 끄기 · ⚠️ 중복 축 진단</p>
               <p className="mt-1">v19 · 2026.9.5 · 🔗 방식 겹쳐 고르기(중복 선택) + 합친 결과 대조</p>
               <p className="mt-1">v18 · 2026.9.5 · 🔗 병렬 조합 3방식(축3×2 / 축2×3 / 축1×6) + 같은 줄 수 공정 대조</p>
               <p className="mt-1">v17 · 2026.8.21 · 🔗 병렬 조합(12축 TOP2 × 3축) + 병렬 vs 단일 백테스트 추가</p>
@@ -4152,7 +4230,13 @@ function App() {
                 <br />· <b>콜드넘버 ↔ 미출현폭탄</b>은 TOP6 중 <b>5.86개</b>가 같다 — 사실상 한 축이다.
                 <br />· 축을 빼도 성적은 그대로다. 대신 <b>핫·미출현·휴식을 끄면 165줄 → 56줄</b>로
                 줄어도 적중률이 오히려 조금 낫다(1.84%) — <b>돈을 3분의 1로 줄일 수 있다.</b>
-                <br />어떤 방식도 당첨을 높여주지 않는다. 이 앱으로 고를 수 있는 것은 <b>얼마를 쓸지</b>뿐이다.
+                <br />· <b>🤫 분배회피 섞기</b>(v21) 는 실측에서 유일하게 무작위를 넘었다 —
+                같은 줄 수 기준 <b>2.36%</b> vs 무작위 2.21%. 다만 이 차이는 <b>표본상 우연 범위</b>다.
+                <br />· 확실한 쪽은 따로 있다. 분배섞기 줄의 <b>32~45 비중이 60.7%</b> 다(균등 31.1%).
+                사람들이 생일 때문에 1~31 을 편중되게 고르므로,
+                <b>당첨됐을 때 나눠 갖는 인원이 적다.</b> 확률이 아니라 <b>받는 금액</b>이 커진다.
+                <br />정리하면 — 당첨 확률은 어떤 방식으로도 못 올린다.
+                고를 수 있는 것은 <b>얼마를 쓸지</b>와 <b>당첨되면 얼마를 받을지</b>다.
               </p>
             </div>
           </div>

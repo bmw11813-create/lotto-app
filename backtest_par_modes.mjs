@@ -101,6 +101,7 @@ const out = await page.evaluate(([hist, targets, base]) => {
       const lines =
           (md.key === 'all')   ? P.parallelUnion(ord, keys, P.PAR_MODES.map(x => x.key)).map(l => l.numbers)
         : (md.key === 'rand')  ? P.randomLines(n, t.round * 7919)
+        : (md.mix)             ? P.popMixAll(ord, keys).map(l => l.numbers)
         : P.parallelCombos(ord, keys, md.m, md.per).map(l => l.numbers);
       const f = P.gradePool(lines, t.nums, t.bonus);
       const e = P.gradePoolTop(lines, n, t.nums, t.bonus);
@@ -110,6 +111,12 @@ const out = await page.evaluate(([hist, targets, base]) => {
       for (let i = 0; i <= 6; i++) { a.full[i] += f.dist[i]; a.equal[i] += e.dist[i]; }
       if (f.best && f.best.hits > a.best) a.best = f.best.hits;
       a.cover = (a.cover || 0) + P.coverCount(lines);
+      /* 이 방식의 목적은 적중이 아니라 '당첨 시 나눠 갖는 인원' 이다 —
+         32~45 비중과 대중성 점수를 함께 잰다(높은 번호가 많을수록 남들과 덜 겹친다) */
+      lines.forEach(L => {
+        a.hi = (a.hi || 0) + L.filter(x => x >= 32).length;
+        a.nums = (a.nums || 0) + L.length;
+      });
       a.anyHit3 = (a.anyHit3 || 0) + (f.hit3 > 0 ? 1 : 0);   /* 그 회차에 3개 이상이 하나라도 있었나 */
       row.m[md.key] = { lines: lines.length, fullBest: f.best ? f.best.hits : 0, equalHit3: e.hit3 };
     });
@@ -146,11 +153,12 @@ out.modes.forEach(m => {
 });
 say('');
 say('[커버·회차 단위] — 45개 중 몇 개를 덮나 / 그 회차에 5등 이상이 하나라도 나온 비율');
-say('방식     덮는번호   회차적중률');
+say('방식     덮는번호   회차적중률   32~45비중');
 out.modes.forEach(m => {
   const a = out.acc[m.key];
   say(`${m.short.padEnd(8)} ${(a.cover / a.rounds).toFixed(1).padStart(6)}/45 `
-    + `${pct(a.anyHit3, a.rounds).padStart(10)}`);
+    + `${pct(a.anyHit3, a.rounds).padStart(10)}`
+    + `${((a.hi / a.nums) * 100).toFixed(1).padStart(9)}%`);
 });
 say('');
 out.modes.forEach(m => say(`${m.short} 최고 적중: ${out.acc[m.key].best}개`));
@@ -158,6 +166,8 @@ say('');
 say('※ 3개 이상 = 5등 이상. 로또 1줄이 3개 이상 맞을 확률은 약 2.24% 다.');
 say('※ 「합침」 = 세 방식을 모두 켜고 번호가 같은 줄을 한 번만 남긴 것.');
 say('※ 「무작위」 = 같은 줄 수를 무작위로 뽑은 대조군. 이것보다 못하면 전략이 손해다.');
+say('※ 32~45 비중 — 사람들이 생일 때문에 1~31 을 많이 고른다. 이 비중이 높을수록');
+say('   당첨됐을 때 나눠 갖는 인원이 적다. 균등 기대치는 31.1%(14/45) 다.');
 say('※ 📊 내 빈도 축은 소급 검증에 쓸 수 없어(그 회차에 저장한 줄이 없다) 제외했다.');
 
 writeFileSync('backtest_par_modes.txt', L.join('\n') + '\n', 'utf-8');

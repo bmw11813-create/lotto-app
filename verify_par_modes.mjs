@@ -67,15 +67,16 @@ if (pageErrors.length) console.log(pageErrors.slice(0, 3));
 /* 순위표(ord)를 만들어 계산부를 직접 두드린다.
    실데이터가 없어도 되도록 축마다 서로 다른 결정적 순서를 만든다. */
 const R = await page.evaluate(() => {
-  const KEYS = ['A', 'B', 'C', 'D', 'E'];
+  const KEYS = ['T', 'A', 'B', 'C', 'D'];   // T = 분배회피(섞기 대상)
   const ALL = Array.from({ length: 45 }, (_, i) => i + 1);
   const ord = {};
   KEYS.forEach((k, i) => {           // 축마다 시작점을 달리해 겹침도 생기게 한다
     ord[k] = ALL.slice(i).concat(ALL.slice(0, i));
   });
   const P = window.__par;
-  const out = { modes: P.PAR_MODES.map(m => ({ key: m.key, m: m.m, per: m.per })), runs: {} };
-  P.PAR_MODES.forEach(md => {
+  const COMBO = P.PAR_MODES.filter(m => !m.mix);      // 조합 방식만
+  const out = { modes: COMBO.map(m => ({ key: m.key, m: m.m, per: m.per })), runs: {} };
+  COMBO.forEach(md => {
     const lines = P.parallelCombos(ord, KEYS, md.m, md.per);
     out.runs[md.key] = {
       count: lines.length,
@@ -102,6 +103,26 @@ const R = await page.evaluate(() => {
   out.equalN = P.parEqualN(KEYS);
   out.cmp = P.parCompareModes(ord, KEYS, [1, 2, 3, 4, 5, 6], 7)
     .map(c => ({ key: c.key, lines: c.lines, fullGames: c.full.games, equalGames: c.equal.games }));
+  /* 🆕 v21 — 분배회피 섞기 */
+  const mixAll = P.popMixAll(ord, KEYS);
+  out.mix = {
+    count: mixAll.length,
+    expect: (KEYS.length - 1) * P.POPMIX_RATIOS.length,
+    allSix: mixAll.every(l => l.numbers.length === 6),
+    noDup: mixAll.every(l => new Set(l.numbers).size === 6),
+    usesT: mixAll.every(l => l.parts[0].k === P.POPMIX_KEY),
+    ratios: [...new Set(mixAll.map(l => l.mix.join(':')))].sort(),
+    splitOk: mixAll.every(l => l.parts[0].nums.length + l.parts[1].nums.length === 6
+      && l.parts[0].nums.length === l.mix[0]),
+    labelled: mixAll.every(l => /분배\d\+/.test(l.label)),
+    deterministic: JSON.stringify(mixAll.map(l => l.numbers))
+      === JSON.stringify(P.popMixAll(ord, KEYS).map(l => l.numbers)),
+  };
+  out.mixOne = (() => {
+    const l = P.popMixLine('A', ord, [4, 2]);
+    return l ? { t: l.parts[0].nums.length, o: l.parts[1].nums.length, six: l.numbers.length } : null;
+  })();
+
   /* 🆕 v19 — 방식 겹쳐 고르기(합치기) */
   const uni = P.parallelUnion(ord, KEYS, ['a3x2', 'b2x3', 'c1x6']);
   const sigs = uni.map(l => l.numbers.join(','));
@@ -150,7 +171,7 @@ const R = await page.evaluate(() => {
   return out;
 });
 
-ok('② 방식 3종이 정의돼 있다 (실제 ' + R.modes.map(m => m.m + '×' + m.per).join(' / ') + ')',
+ok('② 조합 방식 3종이 정의돼 있다 (실제 ' + R.modes.map(m => m.m + '×' + m.per).join(' / ') + ')',
   JSON.stringify(R.modes.map(m => [m.m, m.per])) === JSON.stringify([[3, 2], [2, 3], [1, 6]]));
 ok('nCk 계산 정상 (실제 ' + R.nck.join(',') + ')',
   JSON.stringify(R.nck) === JSON.stringify([10, 10, 5, 165, 55, 11]));
@@ -171,11 +192,11 @@ ok('⑥ 겹치면 다음 순위로 밀고 * 로 표시 (실제 ' + (R.subst && R
   R.subst && R.subst.substituted === true && /\*/.test(R.subst.label));
 
 ok('⑦ 공정 비교용 줄 수 = 가장 적은 방식에 맞춘다 (실제 ' + R.equalN + ')', R.equalN === 5);
-ok('★ ⑦ 방식들을 같은 줄 수로 잘라 채점한다 (실제 ' + R.cmp.map(c => c.equalGames).join(',') + ')',
-  R.cmp.length === 4 && R.cmp.every(c => c.equalGames === 5));
-ok('⑦ 전체 줄 수는 방식마다 그대로 · 맨 뒤는 합침 (실제 ' + R.cmp.map(c => c.fullGames).join(',') + ')',
-  JSON.stringify(R.cmp.slice(0, 3).map(c => c.fullGames)) === JSON.stringify([10, 10, 5])
-  && R.cmp[3].fullGames > 0 && R.cmp[3].fullGames <= 25);
+ok('★ ⑦ 방식들을 같은 줄 수(5)로 잘라 채점한다 — 줄이 그보다 적으면 있는 만큼 (실제 '
+   + R.cmp.map(c => c.equalGames + '/' + c.lines).join(' ') + ')',
+  R.cmp.length === 5 && R.cmp.every(c => c.equalGames === Math.min(5, c.lines)));
+ok('⑦ 조합 방식 줄 수는 그대로 (실제 ' + R.cmp.map(c => c.fullGames).join(',') + ')',
+  JSON.stringify(R.cmp.slice(0, 3).map(c => c.fullGames)) === JSON.stringify([10, 10, 5]));
 
 /* 화면에 방식 버튼이 실제로 있는가 */
 const ui = await page.evaluate(() => {
@@ -206,7 +227,21 @@ const ui2 = await page.evaluate(() => {
   return cmp(ord, KEYS, [1, 2, 3, 4, 5, 6], 7).map(c => ({ key: c.key, lines: c.lines }));
 });
 ok('⑧ 대조표에 「합침」 줄이 추가된다 (실제 ' + ui2.map(c => c.key).join(',') + ')',
-  ui2.length === 4 && ui2[3].key === 'all' && ui2[3].lines > 0);
+  ui2.length === 5 && ui2[4].key === 'all' && ui2[4].lines > 0);
+
+/* ── 🆕 v21 분배회피 섞기 ────────────────────────────────── */
+const M = R.mix;
+ok('⑫ 상대 축 × 비율 3가지만큼 나온다 (기대 ' + M.expect + ' · 실제 ' + M.count + ')',
+  M.count > 0 && M.count <= M.expect);
+ok('⑫ 모든 줄이 6개 · 중복 없음', M.allSix && M.noDup);
+ok('★ ⑫ 항상 분배회피 축이 먼저 들어간다', M.usesT);
+ok('★ ⑫ 4:2 · 3:3 · 2:4 가 모두 쓰인다 (실제 ' + M.ratios.join(' ') + ')',
+  JSON.stringify(M.ratios) === JSON.stringify(['2:4', '3:3', '4:2']));
+ok('⑫ 비율대로 나눠 담는다 (분배회피 개수 = 비율 앞자리)', M.splitOk);
+ok('⑫ 어느 비율로 만든 줄인지 표시된다', M.labelled);
+ok('⑫ 같은 데이터면 결과가 같다', M.deterministic);
+ok('⑫ 4:2 는 분배회피 4 + 상대 2 (실제 ' + (R.mixOne && R.mixOne.t) + '+' + (R.mixOne && R.mixOne.o) + ')',
+  R.mixOne && R.mixOne.t === 4 && R.mixOne.o === 2 && R.mixOne.six === 6);
 
 /* ── 🆕 v20 중복 축 진단 · 커버 · 무작위 대조군 ─────────── */
 const V = R.v20;
