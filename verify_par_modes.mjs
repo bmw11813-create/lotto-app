@@ -167,6 +167,34 @@ const R = await page.evaluate(() => {
     randShape: P.randomLines(20, 7).every(l => l.length === 6 && new Set(l).size === 6
       && l.every(n => n >= 1 && n <= 45) && l.every((n, i, arr) => i === 0 || arr[i - 1] < n)),
   };
+  /* 🆕 v22 — 6축 통합 */
+  const o12 = { T: ALL.slice(), U: ALL.slice(), V: ALL.slice().reverse(),
+                X: ALL.slice(), COLD: ALL.slice(), Y: ALL.slice(), Z: ALL.slice(),
+                HOT: ALL.slice(), MY: ALL.slice(), W: ALL.slice(),
+                C: ALL.slice(), R: ALL.slice() };
+  const o6 = P.axisOrders6(o12);
+  const k6 = P.axisKeys6(o6);
+  out.six = {
+    keys: k6,
+    count: k6.length,
+    groups: P.AXIS6.map(g => g.k),
+    allFull: k6.every(k => o6[k].length === 45 && new Set(o6[k]).size === 45),
+    /* U(정순) + V(역순)은 모든 번호의 평균 자리가 같아진다 → 완전 동점 → 번호순 */
+    tieOrder: o6.G_NUM ? o6.G_NUM.slice(0, 3).join(',') : null,
+    /* 실제로 순서를 바꾸는 경우 — 45를 U 에서 맨 앞으로 올리면 평균이 당겨진다 */
+    reorder: (() => {
+      const u = [45].concat(ALL.filter(n => n !== 45));   // 45가 1등
+      const v = ALL.slice();                              // 45가 꼴등
+      const m = P.mergeOrders({ U: u, V: v }, ['U', 'V']);
+      return { pos45: m.indexOf(45), pos1: m.indexOf(1), len: m.length };
+    })(),
+    /* 재료가 하나면 그대로 */
+    popSame: JSON.stringify(o6.G_POP) === JSON.stringify(o12.T),
+    /* 재료가 없으면 빠진다 */
+    dropped: P.axisKeys6(P.axisOrders6({ T: ALL.slice() })),
+    mixKey: P.popmixKeyOf(o6),
+    mixKey12: P.popmixKeyOf(o12),
+  };
   out.nck = [P.nCk(5, 3), P.nCk(5, 2), P.nCk(5, 1), P.nCk(11, 3), P.nCk(11, 2), P.nCk(11, 1)];
   return out;
 });
@@ -240,6 +268,23 @@ ok('★ ⑫ 4:2 · 3:3 · 2:4 가 모두 쓰인다 (실제 ' + M.ratios.join(' '
 ok('⑫ 비율대로 나눠 담는다 (분배회피 개수 = 비율 앞자리)', M.splitOk);
 ok('⑫ 어느 비율로 만든 줄인지 표시된다', M.labelled);
 ok('⑫ 같은 데이터면 결과가 같다', M.deterministic);
+/* ── 🆕 v22 6축 통합 ─────────────────────────────────────── */
+const S6 = R.six;
+ok('★ ⑬ 12축이 6축으로 묶인다 (실제 ' + S6.count + '개 · ' + S6.keys.join(' ') + ')',
+  S6.count === 6 && JSON.stringify(S6.keys) === JSON.stringify(S6.groups));
+ok('⑬ 묶은 뒤에도 1~45 가 빠짐없이 한 번씩', S6.allFull);
+ok('⑬ 재료가 하나뿐인 묶음은 원본 그대로 (분배회피)', S6.popSame);
+ok('⑬ 정순+역순은 모든 번호가 동점 → 번호순 (실제 ' + S6.tieOrder + ')',
+  S6.tieOrder === '1,2,3');
+ok('★ ⑬ 순위 평균이 실제로 순서를 바꾼다 — 한쪽 1등·한쪽 꼴등인 45가 중간으로 (실제 '
+   + S6.reorder.pos45 + '번째 · 1번은 ' + S6.reorder.pos1 + '번째)',
+  S6.reorder.len === 45 && S6.reorder.pos45 > 0 && S6.reorder.pos45 < 44
+  && S6.reorder.pos45 > S6.reorder.pos1);
+ok('⑬ 재료가 없는 묶음은 빠진다 (실제 ' + JSON.stringify(S6.dropped) + ')',
+  JSON.stringify(S6.dropped) === JSON.stringify(['G_POP']));
+ok('⑬ 분배섞기가 6축에서는 G_POP 을 쓴다 (실제 ' + S6.mixKey + ' / 12축 ' + S6.mixKey12 + ')',
+  S6.mixKey === 'G_POP' && S6.mixKey12 === 'T');
+
 ok('⑫ 4:2 는 분배회피 4 + 상대 2 (실제 ' + (R.mixOne && R.mixOne.t) + '+' + (R.mixOne && R.mixOne.o) + ')',
   R.mixOne && R.mixOne.t === 4 && R.mixOne.o === 2 && R.mixOne.six === 6);
 

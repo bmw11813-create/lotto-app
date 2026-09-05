@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="로또분석기" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#047857" />
-  <title>로또 분석기 v21</title>
+  <title>로또 분석기 v22</title>
   <link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23047857'/><text x='50' y='68' font-size='60' text-anchor='middle'>🎰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -197,7 +197,7 @@ const Link2 = _ic([{d:'M9 17H7A5 5 0 0 1 7 7h2'},{d:'M15 7h2a5 5 0 1 1 0 10h-2'}
 const RefreshCw = _ic([{t:'polyline',points:'23 4 23 10 17 10'},{t:'polyline',points:'1 20 1 14 7 14'},{d:'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15'}]);
 
 // ===== 📌 앱 버전 (새 코드 올릴 때마다 이 숫자를 올리세요. 예: 5 → 6) =====
-const APP_VERSION = 21;
+const APP_VERSION = 22;
 
 // ===== 전략 메타정보 (이름/색상 등 고정, 번호값은 엔진이 자동 계산) =====
 const STRAT_META = {
@@ -1208,8 +1208,66 @@ const AXIS_SHORT = {
   T: '분배', C: '합의', R: '동순위', X: '보너스', Y: '미출현',
   Z: '휴식', W: '이월', V: '끝수', U: '합계'
 };
-const axisShort = (k) => AXIS_SHORT[k] || k;
-const axisMeta = (k) => AXES.find(a => a.k === k) || { k, label: k, emoji: '' };
+const axisShort = (k) => AXIS_SHORT[k] || (typeof AXIS6_SHORT !== 'undefined' && AXIS6_SHORT[k]) || k;
+const axisMeta = (k) => AXES.find(a => a.k === k)
+  || (typeof AXIS6 !== 'undefined' && AXIS6.find(a => a.k === k))
+  || { k, label: k, emoji: '' };
+
+/* ══════════════════════════════════════════════════════════════
+ * 🆕 v22 — 12축을 **6축으로 통합**
+ * ─────────────────────────────────────────────────────────────
+ *  왜: 실측(analyze_axes.txt)에서 축들이 서로 같은 말을 하고 있었다.
+ *    · 콜드넘버 ↔ 미출현폭탄 : TOP6 중 **5.86개 동일** — 사실상 한 축
+ *    · 합의(C) 는 다른 축들과 2.0 안팎으로 두루 겹친다 — 원래 메타 축이다
+ *    · 축별 단독 성적 편차가 크다 — U 4.5% · T·X 3.5% vs HOT·Y·Z 1.0%
+ *
+ *  어떻게: **순위 평균(보르다)** 으로 합친다. 묶인 축들의 순위 자리를 평균 내
+ *    새 순위를 만든다. 한쪽만 재료가 있으면 그 축을 그대로 쓴다.
+ *    ★ 새 점수식을 만들지 않는다 — 기존 축 계산은 한 줄도 손대지 않는다.
+ *
+ *  ★ 12축 원본도 그대로 남긴다. 화면에서 6축/12축을 고를 수 있다.
+ * ══════════════════════════════════════════════════════════════ */
+const AXIS6 = [
+  { k: 'G_POP',  from: ['T'],              label: '분배회피',   emoji: '🤫',
+    why: '당첨 시 나눠 갖는 인원을 줄인다 — 개념이 유일해 그대로 둔다' },
+  { k: 'G_NUM',  from: ['U', 'V'],         label: '수치규칙',   emoji: '🎲',
+    why: '합계정밀 + 최약끝수 — 둘 다 조합의 수치 성질을 본다' },
+  { k: 'G_BON',  from: ['X'],              label: '보너스추적', emoji: '🎯',
+    why: '보너스 번호 흐름 — 다른 축과 겹치지 않는다' },
+  { k: 'G_MISS', from: ['COLD', 'Y', 'Z'], label: '미출현',     emoji: '🧊',
+    why: '콜드 + 미출현폭탄 + 휴식회귀 — 전부 "오래 안 나온" 이야기(TOP6 5.86 동일)' },
+  { k: 'G_FREQ', from: ['HOT', 'MY', 'W'], label: '출현빈도',   emoji: '🔥',
+    why: '핫 + 내 빈도 + 이월수 — 전부 "나온" 쪽 이야기' },
+  { k: 'G_CONS', from: ['C', 'R'],         label: '합의',       emoji: '🤝',
+    why: '합의 + 동순위 — 둘 다 다른 축의 순위를 합치는 메타 축' },
+];
+const AXIS6_SHORT = { G_POP: '분배', G_NUM: '수치', G_BON: '보너스',
+                      G_MISS: '미출현', G_FREQ: '빈도', G_CONS: '합의' };
+const axis6Meta = (k) => AXIS6.find(a => a.k === k) || null;
+
+/* 순위 평균으로 합친다. 자리(0부터)의 평균이 작을수록 앞이고, 같으면 번호가 작은 쪽. */
+function mergeOrders(ord, from) {
+  const lists = from.map(k => ord[k]).filter(l => Array.isArray(l) && l.length === 45);
+  if (!lists.length) return null;
+  if (lists.length === 1) return lists[0].slice();
+  const pos = {};
+  lists.forEach(l => l.forEach((n, i) => { pos[n] = (pos[n] || 0) + i; }));
+  return Array.from({ length: 45 }, (_, i) => i + 1)
+    .sort((a, b) => (pos[a] - pos[b]) || (a - b));
+}
+
+/* 12축 순위표 → 6축 순위표. 재료가 하나도 없는 묶음은 빠진다(내 빈도만 있는 경우 등). */
+function axisOrders6(ord) {
+  const out = {};
+  AXIS6.forEach(g => {
+    const m = mergeOrders(ord, g.from);
+    if (m) out[g.k] = m;
+  });
+  return out;
+}
+function axisKeys6(ord6) {
+  return AXIS6.map(g => g.k).filter(k => Array.isArray(ord6[k]) && ord6[k].length === 45);
+}
 
 // 12축 각각의 1~45 순위 순서 (배열 순서가 곧 순위). 재료가 없는 축은 null
 function axisOrders(eng, RANKS, ft) {
@@ -1481,16 +1539,21 @@ function axisDupPairs(ord, keys) {
  *
  *  ★ 적중 확률은 이걸로도 안 오른다. 실측으로 확인하고 그 값을 화면에 적는다.
  * ══════════════════════════════════════════════════════════════ */
-const POPMIX_KEY = 'T';                       // 분배회피 축
+/* 분배회피 축 — 12축에서는 'T', 6축 통합에서는 'G_POP' 이다.
+   섞기는 이 축이 있어야 성립하므로 순위표를 보고 고른다. */
+const POPMIX_KEYS = ['T', 'G_POP'];
+const popmixKeyOf = (ord) => POPMIX_KEYS.filter(k => ord && ord[k])[0] || 'T';
+const POPMIX_KEY = 'T';                       // 옛 호출부 호환
 const POPMIX_RATIOS = [[4, 2], [3, 3], [2, 4]];   // [분배회피에서, 상대 축에서]
 
 /* 분배회피 × 상대 축 한 줄. ratio = [분배회피 개수, 상대 축 개수] */
 function popMixLine(otherKey, ord, ratio) {
-  if (!ord[POPMIX_KEY] || !ord[otherKey] || otherKey === POPMIX_KEY) return null;
-  const line = parallelLine([POPMIX_KEY, otherKey], ord, ratio);
+  const pk = popmixKeyOf(ord);
+  if (!ord[pk] || !ord[otherKey] || otherKey === pk) return null;
+  const line = parallelLine([pk, otherKey], ord, ratio);
   if (!line) return null;
   line.mix = ratio.slice();
-  line.label = `${axisShort(POPMIX_KEY)}${ratio[0]}+${axisShort(otherKey)}${ratio[1]}`
+  line.label = `${axisShort(pk)}${ratio[0]}+${axisShort(otherKey)}${ratio[1]}`
     + (line.substituted ? ' *' : '');
   return line;
 }
@@ -1498,7 +1561,7 @@ function popMixLine(otherKey, ord, ratio) {
 /* 쓸 수 있는 상대 축 전부 × 비율 3가지.
    비율 순서는 축마다 한 칸씩 밀어 한쪽 비율만 몰리지 않게 한다(씨앗 없이도 고르게 섞인다). */
 function popMixAll(ord, keys) {
-  const others = keys.filter(k => k !== POPMIX_KEY);
+  const others = keys.filter(k => k !== popmixKeyOf(ord));
   const out = [], seen = {};
   others.forEach((k, idx) => {
     for (let r = 0; r < POPMIX_RATIOS.length; r++) {
@@ -1568,6 +1631,11 @@ if (typeof window !== 'undefined' && window.__par) {
   window.__par.gradePoolTop = gradePoolTop;
   window.__par.parCompareModes = parCompareModes;
   /* 실제 과거 회차로 대조하려면 순위표를 만드는 앞단도 필요하다 */
+  window.__par.AXIS6 = AXIS6;
+  window.__par.mergeOrders = mergeOrders;
+  window.__par.axisOrders6 = axisOrders6;
+  window.__par.axisKeys6 = axisKeys6;
+  window.__par.popmixKeyOf = popmixKeyOf;
   window.__par.popMixLine = popMixLine;
   window.__par.popMixAll = popMixAll;
   window.__par.POPMIX_RATIOS = POPMIX_RATIOS;
@@ -2130,6 +2198,8 @@ function App() {
   /* 🆕 v20 — 끈 축. 실측상 축끼리 겹치는 쌍이 있고(콜드↔미출현 TOP6 중 5.86개 동일)
      성적이 바닥인 축도 있다. 빼면 줄 수도 줄고 번호가 덜 쏠린다. */
   const [parOff, setParOff] = useState([]);
+  /* 🆕 v22 — 6축 통합을 기본으로 한다. 12축은 그대로 골라 쓸 수 있다. */
+  const [par6, setPar6] = useState(true);
   const [parOpen, setParOpen] = useState(false);       // 축별 TOP 펼치기
   const [parAxOpen, setParAxOpen] = useState(false);   // 🆕 v20 축 끄기 펼치기
   const [parRows, setParRows] = useState([]);          // 소급 백테스트 결과 (통계 탭)
@@ -2164,14 +2234,17 @@ function App() {
   const { ranks: RANKS, anti: ANTI } = useMemo(() => buildRankings(engine, STRATEGIES), [engine, STRATEGIES]);
 
   // 🔗 병렬 조합 — 12축의 1~45 순위 순서 (📊 내 빈도는 이번 회차에 저장된 줄에서 계산)
-  const parOrd = useMemo(() => {
+  const parOrd12 = useMemo(() => {
     const cur = saved.find(r => r.round === round);
     return axisOrders(engine, RANKS, cur ? freqTable(cur) : null);
   }, [engine, RANKS, saved, round]);
   /* 켠 방식들 — PAR_MODES 순서 유지 (아래 parCover 가 쓰므로 먼저 만든다) */
   const parMdList = useMemo(
     () => PAR_MODES.filter(m => parModeKeys.indexOf(m.key) >= 0), [parModeKeys]);
-  const parKeysAll = useMemo(() => axisKeys(parOrd), [parOrd]);
+  const parOrd = useMemo(
+    () => (par6 ? axisOrders6(parOrd12) : parOrd12), [par6, parOrd12]);
+  const parKeysAll = useMemo(
+    () => (par6 ? axisKeys6(parOrd) : axisKeys(parOrd)), [par6, parOrd]);
   const parKeys = useMemo(
     () => parKeysAll.filter(k => parOff.indexOf(k) < 0), [parKeysAll, parOff]);
   /* 🆕 v20 — 서로 같은 말을 하는 축 쌍(TOP6 가 4개 이상 겹침) */
@@ -3155,11 +3228,35 @@ function App() {
                 })}
               </div>
 
-              {!parOrd.MY && (
+              {!par6 && !parOrd.MY && (
                 <div className={`text-[11px] leading-relaxed rounded-xl px-3 py-2 mb-3 ${dark ? 'bg-amber-900/30 text-amber-200' : 'bg-amber-50 text-amber-800'}`}>
                   ⚠️ 📊 <strong>내 빈도</strong> 축은 이번 회차에 저장된 줄에서 계산합니다.
                   아직 줄이 없어 <strong>{parKeys.length}축</strong>만 쓰며 자동 생성은
                   <strong>{parLineCount}줄</strong>이 됩니다(겹치는 줄은 빠져 실제로는 더 적을 수 있습니다).
+                </div>
+              )}
+
+              {/* 🆕 v22 — 6축 통합 / 12축 원본 */}
+              <div className="flex gap-1.5 mb-2">
+                {[[true, '6축 통합'], [false, '12축 원본']].map(([v, lb]) => (
+                  <button key={String(v)} onClick={() => { setPar6(v); setParOff([]); setParSel([]); }}
+                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold border-2 active:scale-95 ${par6 === v
+                      ? 'border-teal-500 text-teal-600 bg-teal-500/10'
+                      : (dark ? 'border-slate-600 text-slate-400' : 'border-slate-200 text-slate-500')}`}>
+                    {lb}
+                  </button>
+                ))}
+              </div>
+              {par6 && (
+                <div className={`text-[11px] leading-relaxed rounded-xl px-3 py-2 mb-3 ${dark ? 'bg-teal-900/20 text-teal-200' : 'bg-teal-50 text-teal-900'}`}>
+                  겹치는 축을 <strong>순위 평균</strong>으로 묶어 6개로 줄였습니다.
+                  {AXIS6.map(g => (
+                    <div key={g.k} className="mt-1">
+                      {g.emoji} <strong>{g.label}</strong>
+                      {g.from.length > 1 && <span className="opacity-75"> ← {g.from.map(axisShort).join(' + ')}</span>}
+                      <div className="opacity-70">{g.why}</div>
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -4215,7 +4312,8 @@ function App() {
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
               <div className="font-bold mb-1 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> 안내</div>
               <p className="leading-relaxed">로또는 무작위 추첨, 어떤 분석도 당첨 보장 안 됨. 통계 참고용 (1336 도박상담).</p>
-              <p className="mt-2 font-semibold">v21 · 2026.9.6 · 🤫 분배회피 섞기(4:2·3:3·2:4) · 한도 50→100줄</p>
+              <p className="mt-2 font-semibold">v22 · 2026.9.6 · 🧩 12축 → <b>6축 통합</b>(겹치는 개념 합침)</p>
+              <p className="mt-1">v21 · 2026.9.6 · 🤫 분배회피 섞기(4:2·3:3·2:4) · 한도 50→100줄</p>
               <p className="mt-1">v20 · 2026.9.6 · 🎲 무작위 대조군 · 🧹 축 끄기 · ⚠️ 중복 축 진단</p>
               <p className="mt-1">v19 · 2026.9.5 · 🔗 방식 겹쳐 고르기(중복 선택) + 합친 결과 대조</p>
               <p className="mt-1">v18 · 2026.9.5 · 🔗 병렬 조합 3방식(축3×2 / 축2×3 / 축1×6) + 같은 줄 수 공정 대조</p>
@@ -4235,7 +4333,12 @@ function App() {
                 <br />· 확실한 쪽은 따로 있다. 분배섞기 줄의 <b>32~45 비중이 60.7%</b> 다(균등 31.1%).
                 사람들이 생일 때문에 1~31 을 편중되게 고르므로,
                 <b>당첨됐을 때 나눠 갖는 인원이 적다.</b> 확률이 아니라 <b>받는 금액</b>이 커진다.
-                <br />정리하면 — 당첨 확률은 어떤 방식으로도 못 올린다.
+                <br />· <b>🧩 6축 통합</b>(v22) — 겹치는 축을 순위 평균으로 묶었더니
+                줄이 <b>165 → 20개</b>로 줄고 적중률은 <b>1.63% → 2.05%</b> 로 올랐다.
+                <b>8분의 1 비용으로 더 낫다.</b> 32~45 비중도 32.0 → 40.5% 로 올랐다.
+                <br />· 지금 기준 가장 나은 조합은 <b>6축 + 분배섞기 = 14줄</b> —
+                적중률 2.32%(무작위 2.32%와 같음) · 32~45 비중 <b>61.4%</b>.
+                <br />정리하면 — 당첨 확률은 어떤 방식으로도 무작위 위로 못 올린다.
                 고를 수 있는 것은 <b>얼마를 쓸지</b>와 <b>당첨되면 얼마를 받을지</b>다.
               </p>
             </div>
