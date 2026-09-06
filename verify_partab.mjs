@@ -179,6 +179,26 @@ ok('★ ⑤ 당첨번호가 없으면 비교표를 그리지 않는다(손익 �
 ok('⑤ 대신 들어간 돈만 보여준다 (2줄 = 2,000원)', /2,000원/.test(txt2));
 ok('⑤ 당첨번호를 넣으라고 안내한다', /당첨번호/.test(txt2));
 
+/* ── ⑦ 덮어쓰기 경고 문구 ────────────────────────────────
+   자동 전체 생성은 기존 병렬 줄을 **통째로 교체**한다(data.par = {...}).
+   종전 문구 "다시 만들까요?" 는 추가인지 교체인지 알 수 없었다. */
+const warn = await page.evaluate(() => {
+  const src = [...document.querySelectorAll('script')]
+    .map(x => x.textContent || '').join('');
+  return {
+    saysReplace: /통째로 교체됩니다/.test(src),
+    saysDeleted: /지워지고 새로 만든/.test(src),
+    saysBoth: /줄이 저장돼 있습니다/.test(src),
+    oldGone: !/이미 있습니다\. 다시 만들까요/.test(src),
+    /* 실제로 덮어쓰는 코드인지 — data.par 에 통째 대입 */
+    overwrites: /data\.par = \{/.test(src),
+  };
+});
+ok('★ ⑦ 확인 문구가 "통째로 교체" 라고 밝힌다', warn.saysReplace);
+ok('⑦ 지워지는 줄 수와 새로 생기는 줄 수를 함께 말한다', warn.saysDeleted && warn.saysBoth);
+ok('⑦ 애매하던 옛 문구는 없어졌다', warn.oldGone);
+ok('⑦ (근거) 실제로 data.par 를 통째로 대입한다 = 덮어쓰기', warn.overwrites);
+
 ok('pageerror 0건 (실제 ' + pageErrors.length + ')', pageErrors.length === 0);
 if (pageErrors.length) console.log(pageErrors.slice(0, 5));
 
