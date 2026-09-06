@@ -179,6 +179,44 @@ ok('★ ⑤ 당첨번호가 없으면 비교표를 그리지 않는다(손익 �
 ok('⑤ 대신 들어간 돈만 보여준다 (2줄 = 2,000원)', /2,000원/.test(txt2));
 ok('⑤ 당첨번호를 넣으라고 안내한다', /당첨번호/.test(txt2));
 
+/* ── ⑧ 이어붙이기 ────────────────────────────────────────
+   기존 줄을 남기고 뒤에 덧붙인다. 같은 번호 줄은 붙이지 않는다. */
+const appended = await page.evaluate(() => {
+  const host = document.createElement('div');
+  host.id = '__partab3';
+  document.body.appendChild(host);
+  const rec = {
+    round: 1243, games: [],
+    winNumbers: [1, 2, 3, 30, 31, 32], bonus: 9,
+    par: { isPar: true, axes: 6, modeLabel: '3×2', unique: 4,
+           combos: [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12],
+                    [13, 14, 15, 16, 17, 18], [19, 20, 21, 22, 23, 24]],
+           labels: ['a', 'b', 'c', 'd'],
+           batches: [
+             { at: '2026-09-06T00:00:00Z', modeLabel: '3×2', axes: 6, made: 2, added: 2, sameSkipped: 0 },
+             { at: '2026-09-06T01:00:00Z', modeLabel: '분배섞기', axes: 6, made: 3, added: 2, sameSkipped: 1 },
+           ] },
+  };
+  ReactDOM.createRoot(host).render(React.createElement(ParTab, {
+    saved: [rec], round: 1243, dark: false, card: 'bg-white', textDim: 'text-slate-500',
+  }));
+  return true;
+});
+await page.waitForTimeout(600);
+const txt3 = await page.evaluate(() => (document.getElementById('__partab3') || {}).innerText || '');
+ok('★ ⑧ 여러 번에 나눠 만든 이력이 보인다', /2번에 나눠 만듦/.test(txt3));
+ok('⑧ 회차별로 몇 줄 붙었는지 나온다 (+2줄)', /\+2줄/.test(txt3));
+ok('⑧ 같은 줄이 몇 개 빠졌는지도 나온다', /같은 줄 1 제외/.test(txt3));
+ok('⑧ 붙인 방식이 각각 표시된다 (3×2 · 분배섞기)',
+  /3×2/.test(txt3) && /분배섞기/.test(txt3));
+ok('⑧ 합쳐진 4줄 기준으로 비용이 계산된다 (4,000원)', /4,000원/.test(txt3));
+
+const src = await page.evaluate(() => [...document.querySelectorAll('script')].map(x => x.textContent || '').join(''));
+ok('★ ⑧ 이어붙일 때 같은 번호 줄은 건너뛴다(코드 근거)', /if \(seenSig\[sig\]\) return;/.test(src));
+ok('⑧ 이어붙이기 버튼이 있다', /이어붙이기 \(기존/.test(src));
+ok('⑧ 무한정 쌓이지 않게 상한이 있다 (PAR_MAX_KEEP)', /PAR_MAX_KEEP = \d+/.test(src));
+ok('⑧ 이어붙이기에서는 덮어쓰기 확인창을 띄우지 않는다', /!appending/.test(src));
+
 /* ── ⑦ 덮어쓰기 경고 문구 ────────────────────────────────
    자동 전체 생성은 기존 병렬 줄을 **통째로 교체**한다(data.par = {...}).
    종전 문구 "다시 만들까요?" 는 추가인지 교체인지 알 수 없었다. */
